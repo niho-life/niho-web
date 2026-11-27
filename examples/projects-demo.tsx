@@ -1,21 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PageEditor, type EditorAdapter } from "@niho/web/editor";
-import { createProjectEditorAdapter } from "@niho/web/project-editor";
-import { ProjectManager, type ProjectAdapter } from "@niho/web/project-manager";
-import { ProjectDirectory, type ProjectDirectoryAdapter } from "@niho/web/project-directory";
-import { ProjectDashboard, type ProjectDashboardAdapter, type ProjectSiteView } from "@niho/web/project-dashboard";
-import { CollectionWorkspace } from "@niho/web/collection-workspace";
+import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
+import { ProjectDirectory, type ProjectDirectoryAdapter } from "../dist/project-directory.js";
+import { ProjectDashboard, type ProjectDashboardAdapter, type ProjectSiteView } from "../dist/project-dashboard.js";
+import { CollectionWorkspace } from "../dist/collection-workspace.js";
 import { adapter as collectionAdapter } from "./collection-memory.js";
-import {
-  addProject, addProjectMember, parseProjectCatalog,
-  removeProjectMember, type Project, type ProjectCatalog, type ProjectMember
-} from "@niho/web/projects";
+import { parseProjectCatalog, type Project } from "../dist/projects.js";
 import fixture from "./page.json";
 import type { PageDocument } from "@niho/web/core";
 
 // 公開可能な合成データだけを使う。認証・本番API・実ユーザー・永続ストレージには接続しない。
-let catalog: ProjectCatalog = parseProjectCatalog({ projects: [
+const catalog = parseProjectCatalog({ projects: [
   {
     id: "project_kamakura", name: "鎌倉サイト計画",
     site: { id: "kamakura_site", name: "kamakura-site 対応例", domains: ["https://kamakura.example.test"] },
@@ -27,43 +23,12 @@ let catalog: ProjectCatalog = parseProjectCatalog({ projects: [
     members: [{ userId: "demo_shared", displayName: "共通デモメンバー" }, { userId: "demo_designer", displayName: "デザイン担当（架空）" }]
   }
 ] });
-let catalogVersion = 1, idSequence = 1;
 const documents = new Map<string, PageDocument>();
 const documentVersions = new Map<string, number>();
 for (const project of catalog.projects) {
   documents.set(project.site.id, { ...(structuredClone(fixture) as PageDocument), siteId: project.site.id, title: `${project.name} ホーム` });
   documentVersions.set(project.site.id, 1);
 }
-const snapshot = () => ({ catalog: structuredClone(catalog), version: `catalog-${catalogVersion}` });
-function saved(next: ProjectCatalog) { catalog = next; catalogVersion++; return { status: "saved" as const, snapshot: snapshot() }; }
-
-const accounts: Readonly<Record<string, ProjectMember>> = {
-  "demo-shared": { userId: "demo_shared", displayName: "共通デモメンバー" },
-  "demo-editor": { userId: "demo_editor", displayName: "編集担当（架空）" }
-};
-
-const projectAdapter: ProjectAdapter = {
-  loadCatalog: async () => snapshot(),
-  createProject: async ({ input, expectedVersion }) => {
-    if (expectedVersion !== `catalog-${catalogVersion}`) return { status: "conflict" };
-    const projectId = `project_demo_${idSequence}`, siteId = `site_demo_${idSequence++}`;
-    const project = { id: projectId, name: input.name, site: { id: siteId, name: input.siteName, domains: input.domains }, members: [] };
-    documents.set(siteId, { ...(structuredClone(fixture) as PageDocument), siteId, title: `${input.name} ホーム` }); documentVersions.set(siteId, 1);
-    return saved(addProject(catalog, project));
-  },
-  resolveMember: async (inputIdentifier) => accounts[inputIdentifier] ? structuredClone(accounts[inputIdentifier]) : null,
-  addMember: async ({ projectId, member, expectedVersion }) => {
-    if (expectedVersion !== `catalog-${catalogVersion}`) return { status: "conflict" };
-    const result = addProjectMember(catalog, projectId, member);
-    return result.status === "unchanged" ? result : saved(result.catalog);
-  },
-  removeMember: async ({ projectId, userId, expectedVersion }) => {
-    if (expectedVersion !== `catalog-${catalogVersion}`) return { status: "conflict" };
-    const result = removeProjectMember(catalog, projectId, userId);
-    return result.status === "unchanged" ? result : saved(result.catalog);
-  }
-};
-
 const editorAdapter: EditorAdapter = {
   listSites: async () => catalog.projects.map((project) => project.site),
   listPages: async (siteId) => [{ siteId, pageId: "home", locale: "ja-JP", title: "ホーム" }],
@@ -132,7 +97,7 @@ function DemoEditor({ project }: { project: Project }) {
   return <PageEditor adapter={scopedAdapter} />;
 }
 function Demo() {
-  const [screen, setScreen] = useState<"directory" | "dashboard" | "manager" | "editor" | "settings">("directory");
+  const [screen, setScreen] = useState<"directory" | "dashboard" | "editor" | "settings">("directory");
   const [selected, setSelected] = useState<Project | null>(null);
   const [editors, setEditors] = useState<readonly Project[]>([]);
   const [setting, setSetting] = useState<"site" | "analytics">("site");
@@ -147,10 +112,9 @@ function Demo() {
     setSelected(project); setEditors((current) => current.some((value) => value.id === project.id) ? current : [...current, project]); setScreen("editor");
   }
   return <main ref={surface}>
-    {screen === "directory" && <ProjectDirectory adapter={directoryAdapter} onCreateProject={() => setScreen("manager")} onOpenDashboard={openDashboard} onOpenEditor={openEditor} {...(selected ? { initialFocusProjectId: selected.id } : {})} />}
-    {screen === "manager" && <><button type="button" onClick={() => setScreen("directory")}>‹ プロジェクト一覧</button><ProjectManager adapter={projectAdapter} onOpenProject={openDashboard} /></>}
+    {screen === "directory" && <ProjectDirectory adapter={directoryAdapter} onCreateProject={() => undefined} createAction="disabled" onOpenDashboard={openDashboard} onOpenEditor={openEditor} {...(selected ? { initialFocusProjectId: selected.id } : {})} />}
     {screen === "dashboard" && selected && <ProjectDashboard project={selected} adapter={dashboardAdapter} onBackToProjects={() => setScreen("directory")} onOpenEditor={openEditor} onOpenSettings={(project, section) => { setSelected(project); setSetting(section); setScreen("settings"); }} siteViews={demoSiteViews} headerEnd={<span aria-label="デモ利用者" style={{ display: "grid", placeItems: "center", width: 30, height: 30, borderRadius: "50%", background: "#1a1a1a", color: "#fff", font: "700 11px sans-serif" }}>D</span>} activeSiteView={siteView} onSiteViewChange={setSiteView} />}
-    {screen === "settings" && selected && <section style={{ background: "white", padding: 20, font: "14px/1.6 sans-serif" }}><button type="button" onClick={() => setScreen("dashboard")}>‹ ダッシュボード</button><h1>{setting === "analytics" ? "解析接続設定" : "サイト設定"}</h1><p>{selected.name}</p><p>このデモは設定の接続先を示すだけの合成画面です。実際の接続・認可・保存はホストが実装します。</p>{setting === "site" && <button type="button" onClick={() => setScreen("manager")}>作成・参加者管理</button>}</section>}
+    {screen === "settings" && selected && <section style={{ background: "white", padding: 20, font: "14px/1.6 sans-serif" }}><button type="button" onClick={() => setScreen("dashboard")}>‹ ダッシュボード</button><h1>{setting === "analytics" ? "解析接続設定" : "サイト設定"}</h1><p>{selected.name}</p><p>このデモは設定の接続先を示すだけの合成画面です。実際の接続・認可・保存はホストが実装します。</p></section>}
     {editors.map((project) => <section key={project.id} hidden={screen !== "editor" || selected?.id !== project.id}>
       <button type="button" onClick={() => setScreen("directory")}>‹ プロジェクト一覧</button><h1 style={{ font: "700 18px sans-serif" }}>{project.name}のページ編集</h1><DemoEditor project={project} />
     </section>)}

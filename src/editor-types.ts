@@ -4,7 +4,7 @@ import type { ComponentType, ReactNode } from "react";
 import type { AssetLibraryAdapter, ResolvedAssetMap } from "./assets.js";
 import type { BlockDefinition, ExternalFramePolicy } from "./react.js";
 import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
-import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty, StyleValue } from "./types.js";
+import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
 import type { EditingPageApplied, EditingPageApplyConflict, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
@@ -194,36 +194,6 @@ export type EditorBreakpointSettings = {
 };
 export type EditorBreakpointSettingsSnapshot = { settings: EditorBreakpointSettings; version: string };
 export type EditorBreakpointSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
-/** ホスト所有のレスポンシブ提案。provider・認証・保存・利用量管理はホストだけが担う。 */
-export type EditorResponsiveProposalScope = { type: "page" } | { type: "node"; nodeId: string };
-export type EditorResponsiveProposalProperty =
-  | "fontSize" | "lineHeight" | "letterSpacing" | "wordSpacing"
-  | "width" | "height" | "minWidth" | "maxWidth" | "minHeight" | "maxHeight"
-  | "margin" | "marginTop" | "marginRight" | "marginBottom" | "marginLeft"
-  | "padding" | "paddingTop" | "paddingRight" | "paddingBottom" | "paddingLeft"
-  | "display" | "flexDirection" | "flexWrap" | "justifyContent" | "alignItems" | "alignSelf" | "alignContent"
-  | "flexGrow" | "flexShrink" | "flexBasis" | "gap" | "rowGap" | "columnGap"
-  | "gridTemplateColumns" | "gridTemplateRows" | "gridColumn" | "gridRow"
-  | "position" | "top" | "right" | "bottom" | "left" | "overflow" | "overflowX" | "objectFit";
-export type EditorResponsiveProposalRequest = {
-  target: EditorTarget;
-  document: PageDocument;
-  fingerprint: string;
-  scope: EditorResponsiveProposalScope;
-  breakpoints: readonly number[];
-};
-export type EditorResponsiveProposalChange = {
-  nodeId: string;
-  breakpoint: number;
-  property: EditorResponsiveProposalProperty;
-  /** null はその幅の直接指定を外す。 */
-  value: StyleValue | null;
-};
-export type EditorResponsiveProposalResponse = { fingerprint: string; changes: readonly EditorResponsiveProposalChange[] };
-export interface EditorResponsiveProposalAdapter {
-  /** 応答は未検証の外部入力として扱われ、editorが全項目を再検証する。 */
-  propose(request: EditorResponsiveProposalRequest, signal: AbortSignal): Promise<unknown>;
-}
 export type EditorApplyOperationsRequest = Omit<EditingPageApplyInput, "dryRun"> & { readonly target: EditorTarget };
 export type EditorApplyOperationsResult = EditingPageApplied | EditingPageApplyConflict;
 
@@ -290,8 +260,6 @@ export interface EditorAdapter {
     read(siteId: string, signal: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
     save(request: { siteId: string; settings: EditorBreakpointSettings; expectedVersion: string }, signal: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
   };
-  /** 省略したホストでは提案操作を一切表示しない。niho-web自身はAI/providerを呼ばない。 */
-  responsiveProposal?: EditorResponsiveProposalAdapter;
   /** 版履歴。新しい順で、続きは next を cursor に渡す。実装した場合だけ「履歴」を表示する。 */
   listRevisions?(request: { target: EditorTarget; cursor?: string }, signal: AbortSignal): Promise<EditorRevisionPage>;
   /** 共通スタイルを参照する版は、その版に対応する不変のスタイル snapshot も返す。 */

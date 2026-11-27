@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
@@ -239,54 +239,6 @@ test("site breakpoint operations use the common catalog, validate settings and e
   assert.deepEqual(await json(await send("PUT", `${base}.read`)), { status: 405, body: { error: "method_not_allowed" } });
   assert.deepEqual(await json(await send("GET", `${base}.read`, undefined, "Bearer other")), { status: 403, body: { error: "forbidden" } });
   assert.deepEqual(await json(await send("GET", `/sites/${target.siteId}/operations/site.breakpoints.read?unexpected=1`)), { status: 400, body: { error: "invalid_request" } });
-});
-
-test("registered page editing hosts route each site to its own adapter", async () => {
-  function registeredHost(siteId, title) {
-    let document = { ...structuredClone(fixture), siteId, title }, version = "v1";
-    const adapter = {
-      async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "machine", subject: `agent-${siteId}` } : null; },
-      async authorize(actor, capability, scope) { return actor.kind === "machine" && scope.siteId === siteId && ["pages.read", "pages.edit"].includes(capability); },
-      async readPage(_actor, input) { return input.siteId === siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version } : null; },
-      async savePage(_actor, input, expectedVersion, next) {
-        if (input.siteId !== siteId || input.pageId !== target.pageId || input.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
-        document = { ...next, revision: next.revision + 1 };
-        version = `v${Number(version.slice(1)) + 1}`;
-        return { status: "saved", version, document };
-      }
-    };
-    return { adapter, read: () => document };
-  }
-
-  const first = registeredHost(target.siteId, "First host"), second = registeredHost("second-site", "Second host");
-  const api = createRegisteredPageEditingApi([
-    { siteIds: [target.siteId], adapter: first.adapter },
-    { siteIds: ["second-site"], adapter: second.adapter }
-  ]);
-  const send = (siteId, method, body) => api(new Request(`https://host.example/api/edit/v1/sites/${encodeURIComponent(siteId)}/operations/${method === "GET" ? "pages.read" : "pages.save"}/${target.pageId}?locale=${encodeURIComponent(target.locale)}`, {
-    method: method === "GET" ? "GET" : "PUT",
-    headers: { Authorization: "Bearer owner", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) })
-  }));
-
-  const firstRead = await json(await send(target.siteId, "GET"));
-  const secondRead = await json(await send("second-site", "GET"));
-  assert.equal(firstRead.body.document.title, "First host");
-  assert.equal(secondRead.body.document.title, "Second host");
-
-  const wrongSiteDocument = structuredClone(first.read());
-  assert.deepEqual(await json(await send("second-site", "PUT", { expectedVersion: "v1", document: wrongSiteDocument })), {
-    status: 400, body: { error: "invalid_request" }
-  });
-  const changed = structuredClone(second.read()); changed.title = "Updated second host";
-  assert.equal((await json(await send("second-site", "PUT", { expectedVersion: "v1", document: changed }))).status, 200);
-  assert.equal((await json(await send(target.siteId, "GET"))).body.document.title, "First host");
-  assert.equal((await json(await send("second-site", "GET"))).body.document.title, "Updated second host");
-  assert.deepEqual(await json(await send("unregistered-site", "GET")), { status: 404, body: { error: "not_found" } });
-  assert.throws(() => createRegisteredPageEditingApi([
-    { siteIds: [target.siteId], adapter: first.adapter },
-    { siteIds: [target.siteId], adapter: second.adapter }
-  ]), /already registered/u);
 });
 
 test("page editing API prepares an allowlisted release and applies it idempotently", async () => {

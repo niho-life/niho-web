@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { DocumentValidationError, generatePageCss, parsePageDocument } from "@niho/web/core";
 import { acceptSavedRevision, BoxGroupLayoutChange, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
 import { editDocumentById } from "@niho/web/editor-model";
-import { createInsertionNode, formInsertionPresets } from "@niho/web/builder";
+import { createInsertionNode, formInsertionPresets } from "../dist/builder.js";
 import { validatePageDocument } from "../dist/document.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));

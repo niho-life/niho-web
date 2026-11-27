@@ -26,32 +26,6 @@ async function loadWorker() {
   return (await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`)).default;
 }
 
-const schema = () => ({
-  status: "ready",
-  collections: [
-    {
-      id: "posts", label: "記事", addLabel: "新しく書く", icon: "document", ordering: "publishedAt", pathPrefix: "/posts/",
-      titleField: "title", slugField: "slug", imageField: "cover", subtitleField: null,
-      capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: true },
-      fields: [
-        { key: "title", label: "タイトル", type: "text", required: true, placement: "main" },
-        { key: "cover", label: "カバー画像", type: "image", placement: "main" },
-        { key: "body", label: "本文", type: "richText", placement: "main" },
-        { key: "slug", label: "アドレス", type: "slug", required: true, placement: "side" },
-        { key: "tags", label: "タグ", type: "tags", placement: "side" }
-      ]
-    },
-    {
-      id: "circles", label: "サークル", addLabel: "追加する", icon: "people", ordering: "manual", pathPrefix: "/circles/",
-      titleField: "name", slugField: null, imageField: null, subtitleField: null,
-      capabilities: { create: true, duplicate: false, remove: false, unpublish: false, schedule: false },
-      fields: [
-        { key: "name", label: "名前", type: "text", required: true, placement: "main" },
-        { key: "category", label: "種類", type: "select", multiple: false, options: [{ id: "sports", label: "運動" }, { id: "culture", label: "文化" }], placement: "side" }
-      ]
-    }
-  ]
-});
 const item = (overrides = {}, values = {}) => ({
   id: "morning-walk", title: "海辺の朝さんぽ", subtitle: null, imageUrl: null, path: null, status: "draft",
   publishedAt: null, updatedAt: "2026-10-20T09:00:00Z", updatedBy: "書き手（架空）", scheduledAt: null, publishFailed: false, order: null,
@@ -62,7 +36,7 @@ const summary = ({ version: _version, values: _values, ...rest }) => rest;
 function harness(auth, worker) {
   const secret = Buffer.alloc(32, 7).toString("base64url");
   const roles = new Map(), calls = [];
-  let respond = () => Response.json(schema());
+  let respond = () => Response.json({ status: "ready", englishPublications: { "cms:posts:morning-walk": { state: "published", retryable: false } } });
   const env = {
     ACCESS_ISSUER: auth.issuer,
     ACCESS_AUDIENCE: auth.audience,
@@ -116,22 +90,17 @@ test("CMS BFF: Access と D1 の owner/editor を要求ごとに確かめ、鎌�
   });
   const h = harness(auth, worker);
 
-  await expectJson(await h.send("GET", "/schema", undefined, { jwt: "" }), 401, "session_expired");
-  await expectJson(await h.send("GET", "/schema"), 403, "forbidden");
-  await expectJson(await h.send("PUT", "/collections/posts/items/morning-walk/draft", { version: "v1", values: {} }), 403, "forbidden");
+  const english = "/collections/posts/items/morning-walk/english-publication";
+  await expectJson(await h.send("GET", english, undefined, { jwt: "" }), 401, "session_expired");
+  await expectJson(await h.send("GET", english), 403, "forbidden");
+  await expectJson(await h.send("POST", "/collections/posts/items/morning-walk/discard-draft", { version: "v1" }), 403, "forbidden");
   h.roles.set("project-experience/experience", "owner");
-  await expectJson(await worker.fetch(new Request(`${STUDIO}/api/projects/project-experience/sites/experience/cms/schema`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env), 404, "not_found");
+  await expectJson(await worker.fetch(new Request(`${STUDIO}/api/projects/project-experience/sites/experience/cms${english}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env), 404, "not_found");
   assert.equal(h.calls.length, 0, "認可の前に上流を呼ばない");
 
   h.roles.set("project-kamakura/kamakura", "editor");
-  const ready = await expectJson(await h.send("GET", "/schema"), 200);
-  // 今の上流（capabilities が 5 つ）も通し、後から足した 4 つは false にそろえて返す
-  const normalized = schema();
-  for (const collection of normalized.collections) Object.assign(collection.capabilities, { redirects: false, reorder: false, bulk: false, retrySchedule: false });
-  assert.deepEqual(ready, normalized);
-  assert.equal(h.calls.length, 1);
-  assert.equal(h.calls[0].method, "GET");
-  assert.equal(h.calls[0].path, `${UPSTREAM}/schema`);
+  await expectJson(await h.send("GET", english), 200);
+  assert.equal(h.calls[0].path, `${UPSTREAM}${english}`);
   assert.equal(h.calls[0].body, "");
   h.verifySignature(h.calls[0]);
 
@@ -146,11 +115,13 @@ test("CMS BFF: Access と D1 の owner/editor を要求ごとに確かめ、鎌�
     ["GET", "/collections/posts/items/.hidden", 404],
     ["GET", "/collections/posts/items/a/b/c", 404],
     ["POST", "/collections/posts/items/morning-walk/archive", 404],
-    ["POST", "/schema", 405],
-    ["DELETE", "/collections/posts/items/morning-walk", 405],
-    ["PUT", "/collections/posts/items", 405],
-    ["GET", "/collections/posts/items/morning-walk/draft", 405],
-    ["PUT", "/collections/posts/items/morning-walk/publish", 405],
+    ["GET", "/schema", 404],
+    ["POST", "/schema", 404],
+    ["GET", "/collections/posts/items/morning-walk", 404],
+    ["POST", "/collections/posts/items", 404],
+    ["GET", "/collections/posts/items", 404],
+    ["PUT", "/collections/posts/items/morning-walk/draft", 404],
+    ["POST", "/collections/posts/items/morning-walk/publish", 404],
     ["GET", "/uploads/intent", 405]
   ]) {
     const response = await worker.fetch(new Request(`${STUDIO}${BASE}${path}`, { method, headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env);
@@ -160,7 +131,7 @@ test("CMS BFF: Access と D1 の owner/editor を要求ごとに確かめ、鎌�
 
   // 所属の取り消しは次の要求から効く
   h.roles.delete("project-kamakura/kamakura");
-  await expectJson(await h.send("GET", "/schema"), 403, "forbidden");
+  await expectJson(await h.send("GET", english), 403, "forbidden");
   assert.equal(h.calls.length, before);
 });
 
@@ -174,28 +145,13 @@ test("CMS BFF: 本文を操作ごとの key の集合で確かめ、actor に確
   const h = harness(auth, worker);
   h.roles.set("project-kamakura/kamakura", "owner");
   const target = "/collections/posts/items/morning-walk";
-  const saved = item({ version: "v1:-:etag-b:-", title: "新しい題" }, { title: "新しい題" });
-
-  // 下書き: 直した key だけを JSON に作り直して送る
-  h.setRespond(() => Response.json({ status: "saved", item: saved }));
-  const result = await expectJson(await h.send("PUT", `${target}/draft`, { values: { title: "新しい題", tags: ["海", "朝"], cover: null }, version: "v1:-:etag-a:-" }), 200);
-  assert.deepEqual(result, { status: "saved", item: saved });
-  const draftCall = h.calls.at(-1);
-  assert.equal(draftCall.method, "PUT");
-  assert.equal(draftCall.path, `${UPSTREAM}${target}/draft`);
-  assert.equal(draftCall.body, JSON.stringify({ version: "v1:-:etag-a:-", values: { title: "新しい題", tags: ["海", "朝"], cover: null }, actor: { email: EMAIL } }));
-  h.verifySignature(draftCall);
-
-  // 公開・非公開・下書きに戻す・複製・削除・予約・予約の取り消し・新規
   const writes = [
-    ["POST", `${target}/publish`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 202, { status: "publishing", item: item({ status: "publishing" }) }],
     ["POST", `${target}/unpublish`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 202, { status: "publishing", item: item({ status: "publishing" }) }],
     ["POST", `${target}/discard-draft`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 200, { status: "saved", item: item() }],
     ["POST", `${target}/duplicate`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 201, { status: "created", item: item({ id: "morning-walk-copy" }) }],
     ["POST", `${target}/remove`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 200, { status: "removed" }],
     ["POST", `${target}/schedule`, { version: "v1", at: "2026-11-01T18:00:00+09:00" }, { version: "v1", at: "2026-11-01T09:00:00.000Z", actor: { email: EMAIL } }, 200, { status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z" }) }],
     ["POST", `${target}/cancel-schedule`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 200, { status: "saved", item: item() }],
-    ["POST", "/collections/circles/items", {}, { actor: { email: EMAIL } }, 201, { status: "created", item: item({ id: "new-circle", title: "" }, { title: undefined }) }]
   ];
   for (const [method, path, body, forwarded, status, reply] of writes) {
     h.setRespond(() => Response.json(reply, { status }));
@@ -205,44 +161,18 @@ test("CMS BFF: 本文を操作ごとの key の集合で確かめ、actor に確
     h.verifySignature(h.calls.at(-1));
   }
 
-  // 読み取り
-  h.setRespond(() => Response.json({ status: "ready", collectionId: "posts", items: [summary(item())] }));
-  assert.equal((await expectJson(await h.send("GET", "/collections/posts/items"), 200)).items[0].id, "morning-walk");
-  h.setRespond(() => Response.json({ status: "ready", item: item() }));
-  assert.deepEqual(await expectJson(await h.send("GET", target), 200), { status: "ready", item: item() });
-
   // 本文の確かめに落ちた要求は上流へ届かない
   const before = h.calls.length;
-  const big = { version: "v1", values: { body: "x".repeat(1_000_001) } };
   for (const [method, path, body, headers] of [
-    ["PUT", `${target}/draft`, { version: "v1", values: { title: "t" }, actor: { email: "someone@example.test" } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { title: "t" }, extra: true }],
-    ["PUT", `${target}/draft`, { values: { title: "t" } }],
-    ["PUT", `${target}/draft`, { version: "", values: {} }],
-    ["PUT", `${target}/draft`, { version: "v1\n", values: {} }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { Title: "t" } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { title_1: "t" } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { title: 1 } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { title: { nested: true } } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { tags: ["a", "a"] } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { tags: [""] } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { tags: ["x".repeat(201)] } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: { tags: Array.from({ length: 201 }, (_, index) => `t${index}`) } }],
-    ["PUT", `${target}/draft`, { version: "v1", values: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`k${index}`, ""])) }],
-    ["PUT", `${target}/draft`, big],
-    ["PUT", `${target}/draft`, { version: "v1", values: { body: "x".repeat(2 * 1024 * 1024) } }],
-    ["POST", `${target}/publish`, { version: "v1", actor: { email: EMAIL } }],
-    ["POST", `${target}/publish`, { version: "v1", values: {} }],
-    ["POST", `${target}/publish`, { version: "v1", padding: "x".repeat(17 * 1024) }],
     ["POST", `${target}/schedule`, { version: "v1", at: "2026-11-01 09:00" }],
     ["POST", `${target}/schedule`, { version: "v1" }],
-    ["POST", "/collections/circles/items", { actor: { email: EMAIL } }],
-    ["POST", `${target}/publish`, { version: "v1" }, { Origin: "https://evil.example" }],
-    ["POST", `${target}/publish`, { version: "v1" }, { "Sec-Fetch-Site": "cross-site" }],
-    ["POST", `${target}/publish`, { version: "v1" }, { "Content-Type": "text/plain" }]
+    ["POST", `${target}/discard-draft`, { version: "v1", actor: { email: EMAIL } }],
+    ["POST", `${target}/discard-draft`, { version: "v1" }, { Origin: "https://evil.example" }],
+    ["POST", `${target}/discard-draft`, { version: "v1" }, { "Sec-Fetch-Site": "cross-site" }],
+    ["POST", `${target}/discard-draft`, { version: "v1" }, { "Content-Type": "text/plain" }],
   ]) await expectJson(await h.send(method, path, body, { headers }), 400, "invalid_request");
-  await expectJson(await h.send("POST", `${target}/publish`, undefined, { raw: "[1]" }), 400, "invalid_request");
-  await expectJson(await h.send("POST", `${target}/publish`, undefined, { raw: "{" }), 400, "invalid_request");
+  await expectJson(await h.send("POST", `${target}/discard-draft`, undefined, { raw: "[1]" }), 400, "invalid_request");
+  await expectJson(await h.send("POST", `${target}/discard-draft`, undefined, { raw: "{" }), 400, "invalid_request");
   assert.equal(h.calls.length, before);
 
   // アップロード開始
@@ -341,7 +271,7 @@ test("CMS BFF: 上流の status を契約どおりに写し、契約に合わな
   const h = harness(auth, worker);
   h.roles.set("project-kamakura/kamakura", "editor");
   const target = "/collections/posts/items/morning-walk";
-  const save = () => h.send("PUT", `${target}/draft`, { version: "v1", values: { title: "t" } });
+  const save = () => h.send("POST", `${target}/discard-draft`, { version: "v1" });
   const supportIdOf = (value) => { assert.match(value.supportId, /^[0-9a-f-]{36}$/u); return value.supportId; };
 
   // 409・422・404・400
@@ -361,8 +291,6 @@ test("CMS BFF: 上流の status を契約どおりに写し、契約に合わな
   await expectJson(await save(), 502, "upstream_contract_invalid");
   h.setRespond(() => Response.json({ error: "not_found" }, { status: 404 }));
   assert.deepEqual(await expectJson(await save(), 404), { error: "not_found" });
-  assert.deepEqual(await expectJson(await h.send("GET", target), 404), { error: "not_found" });
-  supportIdOf(await expectJson(await h.send("GET", "/schema"), 503, "service_unavailable"));
   h.setRespond(() => Response.json({ error: "bad", detail: "secret" }, { status: 400 }));
   assert.deepEqual(await expectJson(await save(), 400), { error: "invalid_request" });
 
@@ -397,28 +325,14 @@ test("CMS BFF: 上流の status を契約どおりに写し、契約に合わな
     () => Response.json({ error: "method" }, { status: 405 })
   ]) {
     h.setRespond(respond);
-    const value = await expectJson(await h.send("GET", target), 503, "service_unavailable");
+    const value = await expectJson(await save(), 503, "service_unavailable");
     assert.deepEqual(Object.keys(value).sort(), ["error", "supportId"]);
   }
 
   // 契約に合わない成功
   for (const [method, path, body, reply, status] of [
-    ["GET", "/schema", undefined, { ...schema(), extra: true }, 200],
-    ["GET", "/schema", undefined, { status: "forbidden" }, 200],
-    ["GET", "/schema", undefined, { status: "ready", collections: [{ ...schema().collections[0], fields: [{ key: "title_ja", label: "題", type: "text", placement: "main" }], titleField: "title_ja", slugField: null, imageField: null }] }, 200],
-    ["GET", "/schema", undefined, { status: "ready", collections: [{ ...schema().collections[0], id: "Posts" }] }, 200],
-    ["GET", "/collections/posts/items", undefined, { status: "ready", collectionId: "circles", items: [] }, 200],
-    ["GET", "/collections/posts/items", undefined, { status: "ready", collectionId: "posts", items: [{ ...summary(item()), internalId: "x" }] }, 200],
-    ["GET", target, undefined, { status: "ready", item: item({ id: "other-post" }) }, 200],
-    ["GET", target, undefined, { status: "ready", item: { ...item(), studioId: "x" } }, 200],
-    ["GET", target, undefined, { status: "ready", item: item({}, { body: 1 }) }, 200],
-    ["GET", target, undefined, { status: "ready", item: item({ version: "" }) }, 200],
-    ["PUT", `${target}/draft`, { version: "v1", values: {} }, { status: "saved", item: item() }, 201],
-    ["PUT", `${target}/draft`, { version: "v1", values: {} }, { status: "ready", item: item() }, 200],
-    ["POST", `${target}/publish`, { version: "v1" }, { status: "published", item: item() }, 202],
     ["POST", `${target}/duplicate`, { version: "v1" }, { status: "created", item: item() }, 201],
     ["POST", `${target}/remove`, { version: "v1" }, { status: "removed", item: item() }, 200],
-    ["POST", "/collections/posts/items", {}, { status: "created", item: item() }, 200]
   ]) {
     h.setRespond(() => Response.json(reply, { status }));
     supportIdOf(await expectJson(await h.send(method, path, body), 502, "upstream_contract_invalid"));
@@ -427,15 +341,14 @@ test("CMS BFF: 上流の status を契約どおりに写し、契約に合わな
   // 秘密が無い・不正なら閉じる
   const withoutSecret = { ...h.env, KAMAKURA_STUDIO_BRIDGE_SECRET: "short" };
   const calls = h.calls.length;
-  const closed = await worker.fetch(new Request(`${STUDIO}${BASE}/schema`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), withoutSecret);
+  const closed = await worker.fetch(new Request(`${STUDIO}${BASE}${target}/english-publication`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), withoutSecret);
   await expectJson(closed, 503, "service_unavailable");
   assert.equal(h.calls.length, calls);
 
   // log は固定の operation と分類だけ（本文・secret・subject を出さない）
   const logged = warnings.map(([, detail]) => detail);
-  assert.ok(logged.some((detail) => detail.operation === "cms_draft_save" && detail.category === "upstream_contract_invalid" && detail.upstreamStatus === 409));
-  assert.ok(logged.some((detail) => detail.operation === "cms_schema" && detail.category === "cms_endpoint_missing"));
-  assert.ok(logged.some((detail) => detail.operation === "cms_schema" && detail.category === "bridge_secret_missing_or_invalid"));
+  assert.ok(logged.some((detail) => detail.operation === "cms_discard_draft" && detail.category === "upstream_contract_invalid" && detail.upstreamStatus === 409));
+  assert.ok(logged.some((detail) => detail.operation === "cms_english_publication_read" && detail.category === "bridge_secret_missing_or_invalid"));
   assert.ok(!JSON.stringify(logged).includes(auth.subject));
   assert.ok(!JSON.stringify(logged).includes(EMAIL));
 });
@@ -458,8 +371,8 @@ test("CMS BFF: 読み取りは 12 秒、書き込みは 30 秒で上流を打ち
   t.mock.timers.enable({ apis: ["setTimeout"] });
 
   for (const [method, path, body, limit] of [
-    ["GET", "/collections/posts/items/morning-walk", undefined, 12_000],
-    ["POST", "/collections/posts/items/morning-walk/publish", { version: "v1" }, 30_000]
+    ["GET", "/collections/posts/items/morning-walk/english-publication", undefined, 12_000],
+    ["POST", "/collections/posts/items/morning-walk/unpublish", { version: "v1" }, 30_000]
   ]) {
     const started = new Promise((resolve) => { entered = resolve; });
     let settled = false;
@@ -488,15 +401,7 @@ test("CMS BFF: 並べ替え・まとめての操作・予約のやり直しと�
   const circle = (id, order) => summary(item({ id, title: `架空のサークル ${id}`, path: `/circles/${id}`, status: "published", publishedAt: "2026-10-20T09:00:00Z", order }));
   const list = [circle("walk", 1), circle("books", 2)];
 
-  // 新しい schema（9 つの capabilities・gallery の項目）はそのまま通す
-  const next = schema();
-  next.collections[1].capabilities = { create: true, duplicate: false, remove: true, unpublish: true, schedule: false, redirects: true, reorder: true, bulk: true, retrySchedule: false };
-  next.collections[1].fields.push({ key: "portfolio", label: "作品／活動", type: "gallery", captionLabel: "説明", placement: "main", maxItems: 60, captionMaxLength: 2000 });
-  h.setRespond(() => Response.json(next));
-  assert.deepEqual((await expectJson(await h.send("GET", "/schema"), 200)).collections[1], next.collections[1]);
-
   const writes = [
-    ["POST", `${target}/publish`, { version: "v1", redirect: false }, { version: "v1", redirect: false, actor: { email: EMAIL } }, 202, { status: "publishing", item: item({ status: "publishing" }) }],
     ["POST", `${target}/schedule`, { version: "v1", at: "2026-11-01T18:00:00+09:00", redirect: true }, { version: "v1", at: "2026-11-01T09:00:00.000Z", redirect: true, actor: { email: EMAIL } }, 200, { status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z" }) }],
     ["POST", `${target}/remove`, { version: "v1", redirectTo: null }, { version: "v1", redirectTo: null, actor: { email: EMAIL } }, 200, { status: "removed" }],
     ["POST", `${target}/remove`, { version: "v1", redirectTo: "/posts/other-post" }, { version: "v1", redirectTo: "/posts/other-post", actor: { email: EMAIL } }, 200, { status: "removed" }],
@@ -506,9 +411,6 @@ test("CMS BFF: 並べ替え・まとめての操作・予約のやり直しと�
     ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 1, to: 0 }, { ids: ["walk", "books"], from: 1, to: 0, actor: { email: EMAIL } }, 200, { status: "saved", items: list }],
     ["POST", "/collections/circles/bulk", { action: "unpublish", items: [{ id: "walk", version: "v1" }, { id: "books", version: "v2" }] }, { action: "unpublish", items: [{ id: "walk", version: "v1" }, { id: "books", version: "v2" }], actor: { email: EMAIL } }, 202, { status: "publishing", items: list }],
     ["POST", "/collections/circles/bulk", { action: "remove", items: [{ id: "walk", version: "v1" }] }, { action: "remove", items: [{ id: "walk", version: "v1" }], actor: { email: EMAIL } }, 200, { status: "saved", items: [list[1]] }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/a.jpg", caption: "説明\n二行目" }, { id: "", image: null, caption: "" }] } },
-      { version: "v1", values: { portfolio: [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/a.jpg", caption: "説明\n二行目" }, { id: "", image: null, caption: "" }] }, actor: { email: EMAIL } }, 200,
-      { status: "saved", item: item({ id: "walk" }, { portfolio: [{ id: "w1", image: null, caption: "x" }] }) }]
   ];
   for (const [method, path, body, forwarded, status, reply] of writes) {
     h.setRespond(() => Response.json(reply, { status }));
@@ -545,8 +447,6 @@ test("CMS BFF: 並べ替え・まとめての操作・予約のやり直しと�
   const before = h.calls.length;
   const bulkItems = (count) => Array.from({ length: count }, (_, index) => ({ id: `item-${index}`, version: "v1" }));
   for (const [method, path, body] of [
-    ["POST", `${target}/publish`, { version: "v1", redirect: "yes" }],
-    ["POST", `${target}/publish`, { version: "v1", redirectTo: null }],
     ["POST", `${target}/schedule`, { version: "v1", at: "2026-11-01T09:00:00Z", redirect: 1 }],
     ["POST", `${target}/unpublish`, { version: "v1", redirect: true }],
     ["POST", `${target}/remove`, { version: "v1", redirect: true }],
@@ -578,13 +478,6 @@ test("CMS BFF: 並べ替え・まとめての操作・予約のやり直しと�
     ["POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "" }] }],
     ["POST", "/collections/circles/bulk", { action: "publish", items: ["walk"] }],
     ["POST", "/collections/circles/bulk", { action: "publish", items: bulkItems(1), actor: { email: EMAIL } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null }] } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null, caption: "", order: 1 }] } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "../w", image: null, caption: "" }] } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: "https://a.example/x y.jpg", caption: "" }] } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null, caption: "x".repeat(20_001) }] } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null, caption: "" }, "w2"] } }],
-    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: Array.from({ length: 201 }, () => ({ id: "", image: null, caption: "" })) } }]
   ]) await expectJson(await h.send(method, path, body), 400, "invalid_request");
   assert.equal(h.calls.length, before);
 

@@ -38,7 +38,7 @@ const { StudioRichTextEditor, createStudioRichText, sanitizeStudioRichTextHtml, 
 const { sanitizeRichTextHtml } = await import("../dist/collection-model.js");
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
+const { CollectionWorkspace } = await import("../dist/collection-workspace.js");
 
 // STUDIO から移した形の本文（架空）: 図の style・見出しの id・目次の置き場・埋め込み・リンクの target と rel・空の width/height
 const studio = '<h2 id="index_Dm8kQ2aL">はじめに</h2><p>架空の記事です。<a target="_blank" href="https://example.test/guide" rel="">案内</a>もどうぞ。</p><div></div>'

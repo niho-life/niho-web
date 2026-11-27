@@ -1,6 +1,6 @@
 import {
-  COLLECTION_BULK_LIMIT, isIsoTimestamp, parseCollectionItemSummary, parseCollectionListResult, parseCollectionSchemaResult, parseGalleryEntries,
-  type CollectionDefinition, type CollectionFieldError, type CollectionGalleryEntry, type CollectionItem, type CollectionItemSummary, type CollectionValue
+  COLLECTION_BULK_LIMIT, isIsoTimestamp, parseCollectionItemSummary, parseGalleryEntries,
+  type CollectionFieldError, type CollectionGalleryEntry, type CollectionItem, type CollectionItemSummary, type CollectionValue
 } from "../src/collection-model.js";
 import { DocumentValidationError, fail, parseAssetReference, record } from "../src/validation-utils.js";
 import { parseEnglishPublicationsResult, type EnglishPublicationsResult } from "../src/english-publication.js";
@@ -27,10 +27,8 @@ export const KAMAKURA_MEDIA_ORIGIN = "https://kamakura-media.niho.life";
 export const KAMAKURA_CMS_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
 
 export const KAMAKURA_CMS_LIMITS = Object.freeze({
-  /** 上流の応答（schema・一覧・項目・保存結果・409 の項目）。 */
+  /** 専用操作で上流から受け取る結果。 */
   responseBytes: 3 * 1024 * 1024,
-  /** 下書きの保存の本文。 */
-  draftBodyBytes: 2 * 1024 * 1024,
   /** そのほかの本文と、アップロード開始の応答。 */
   bodyBytes: 16 * 1024,
   /** 並べ替え（ids）・まとめての操作（items）の本文。 */
@@ -43,7 +41,7 @@ export const KAMAKURA_CMS_LIMITS = Object.freeze({
   galleryEntries: 200,
   galleryCaptionLength: 20_000,
   valueKeys: 100,
-  /** 1 つの値の文字数（UTF-16）。本文（richText）を含む。本文全体は draftBodyBytes でも抑える。 */
+  /** 1 つの値の文字数（UTF-16）。本文（richText）を含む。 */
   stringLength: 1_000_000,
   arrayEntries: 200,
   arrayEntryLength: 200,
@@ -163,15 +161,6 @@ function parseValuesAt(input: unknown, path: string): Record<string, CollectionV
   return result;
 }
 
-/**
- * 項目の値（definition を使わない形の確かめ）。key は読みやすい名前（^[a-z][A-Za-z0-9]{0,63}$）で 100 個まで、
- * 値は string（100 万字まで）・null・素材参照・string[]（200 個まで・各 1〜200 字・重複なし）・gallery の並び
- * （`{ id, image, caption }` が 200 行まで・id は "" か不透明な id・説明は 2 万字まで）。BFF は下書きの本文にも使う。
- */
-export function parseKamakuraCmsValues(input: unknown, path = "values"): Record<string, CollectionValue> {
-  return guarded(() => parseValuesAt(input, path));
-}
-
 function parseItemAt(input: unknown, path: string, expectedId?: string): CollectionItem {
   const source = record(input, path);
   if (!Object.hasOwn(source, "version") || !Object.hasOwn(source, "values")) fail(path, "missing version or values");
@@ -181,42 +170,6 @@ function parseItemAt(input: unknown, path: string, expectedId?: string): Collect
   if (!isKamakuraCmsItemId(summary.id)) fail(`${path}.id`, "invalid item id");
   if (expectedId !== undefined && summary.id !== expectedId) fail(`${path}.id`, "item identity mismatch");
   return { ...summary, version, values: parseValuesAt(values, `${path}.values`) };
-}
-
-/** 項目 1 件（summary・version・values）。expectedId を渡すと id の一致も確かめる。 */
-export function parseKamakuraCmsItem(input: unknown, expectedId?: string): CollectionItem {
-  return guarded(() => parseItemAt(input, "item", expectedId));
-}
-
-function checkSchemaNames(collections: readonly CollectionDefinition[]): void {
-  collections.forEach((definition, index) => {
-    if (!KAMAKURA_CMS_COLLECTION_ID.test(definition.id)) fail(`schema.collections[${index}].id`, "invalid collection id");
-    definition.fields.forEach((field, fieldIndex) => {
-      if (!KAMAKURA_CMS_VALUE_KEY.test(field.key)) fail(`schema.collections[${index}].fields[${fieldIndex}].key`, "invalid field key");
-    });
-  });
-}
-
-/** GET schema の 200。`{ status: "ready", collections }` だけ（forbidden は BFF が返すので上流からは受けない）。 */
-export function parseKamakuraCmsSchema(input: unknown): { readonly status: "ready"; readonly collections: readonly CollectionDefinition[] } {
-  return guarded(() => {
-    if (record(input, "schema").status !== "ready") fail("schema.status", "invalid status");
-    const result = parseCollectionSchemaResult(input);
-    if (result.status !== "ready") fail("schema.status", "invalid status");
-    checkSchemaNames(result.collections);
-    return result;
-  });
-}
-
-/** GET collections/:col/items の 200。 */
-export function parseKamakuraCmsList(input: unknown, collectionId: string): { readonly status: "ready"; readonly collectionId: string; readonly items: readonly CollectionItemSummary[] } {
-  return guarded(() => {
-    if (record(input, "list").status !== "ready") fail("list.status", "invalid status");
-    const result = parseCollectionListResult(input, collectionId);
-    if (result.status !== "ready") fail("list.status", "invalid status");
-    result.items.forEach((item, index) => { if (!isKamakuraCmsItemId(item.id)) fail(`list.items[${index}].id`, "invalid item id"); });
-    return result;
-  });
 }
 
 export type KamakuraCmsItemStatus = "ready" | "created" | "saved" | "publishing";

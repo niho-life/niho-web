@@ -58,75 +58,12 @@ function fakeBff(t, routes) {
   return calls;
 }
 
-test("CMS adapter: 最後に読んだ値との差分だけを保存し、version が合わなければ上書きせずに競合を返す", async (t) => {
-  const { createKamakuraCmsAdapter } = await loadAdapter();
-  const definition = parseCollectionSchemaResult(schema()).collections[0];
-  let saveReply = () => jsonResponse({ status: "saved", item: item({ version: "v2", title: "新しい題" }, { ...rawValues, title: "新しい題" }) });
-  const calls = fakeBff(t, {
-    "GET /schema": () => jsonResponse(schema()),
-    "GET /collections/posts/items/morning-walk": () => jsonResponse({ status: "ready", item: item() }),
-    "PUT /collections/posts/items/morning-walk/draft": (body) => saveReply(body)
-  });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
-
-  assert.deepEqual(parseCollectionSchemaResult(await adapter.loadSchema(signal())), parseCollectionSchemaResult(schema()));
-  const loaded = parseCollectionItemResult(await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal()), definition, "morning-walk");
-  assert.equal(loaded.status, "ready");
-  assert.equal(calls[1].init.credentials, "same-origin");
-  assert.equal(calls[1].init.cache, "no-store");
-
-  // 画面は definition の形にそろえた全部の値を渡す。直していない本文・null の slug・欠けた日時は送らない
-  const values = { ...parseCollectionValues(rawValues, definition), title: "新しい題" };
-  const saved = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values }, signal()), definition, "morning-walk");
-  assert.equal(saved.status, "saved");
-  assert.equal(saved.item.version, "v2");
-  assert.deepEqual(calls.at(-1).body, { version: "v1", values: { title: "新しい題" } });
-  assert.equal(calls.at(-1).method, "PUT");
-
-  // 次の保存は保存結果（v2）との差分。画像を外したら null を送る
-  const next = { ...values, tags: ["海", "朝"], cover: null };
-  saveReply = () => jsonResponse({ status: "saved", item: item({ version: "v3" }, { ...rawValues, title: "新しい題", tags: ["海", "朝"] }) });
-  await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v2", values: next }, signal());
-  assert.deepEqual(calls.at(-1).body, { version: "v2", values: { tags: ["海", "朝"] } });
-
-  // 変更が無ければ BFF を呼ばない
-  const before = calls.length;
-  const unchanged = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v3", values: next }, signal()), definition, "morning-walk");
-  assert.equal(unchanged.status, "saved");
-  assert.equal(unchanged.item.version, "v3");
-  assert.equal(calls.length, before);
-
-  // 覚えていない version なら読み直し、最新が違えば保存せずに競合
-  const conflict = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v9", values: next }, signal()), definition, "morning-walk");
-  assert.equal(conflict.status, "conflict");
-  assert.equal(conflict.item.version, "v1");
-  assert.deepEqual(calls.slice(before).map(({ method, path }) => `${method} ${path}`), ["GET /collections/posts/items/morning-walk"]);
-
-  // 上流の 409・422・403・404・503 を画面の形にする
-  saveReply = () => jsonResponse({ error: "conflict", item: item({ version: "v5", updatedBy: "別の書き手（架空）" }) }, 409);
-  const remote = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...values, title: "もう一度" } }, signal()), definition, "morning-walk");
-  assert.deepEqual([remote.status, remote.item.version], ["conflict", "v5"]);
-  saveReply = () => jsonResponse({ error: "invalid", errors: [{ field: "slug", message: "このアドレスはほかの記事で使っています。" }] }, 422);
-  await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal());
-  assert.deepEqual(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...values, slug: "taken" } }, signal()), { status: "invalid", errors: [{ field: "slug", message: "このアドレスはほかの記事で使っています。" }] });
-  saveReply = () => jsonResponse({ error: "forbidden" }, 403);
-  assert.deepEqual(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...values, slug: "x" } }, signal()), { status: "forbidden" });
-  saveReply = () => jsonResponse({ error: "not_found" }, 404);
-  assert.deepEqual(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...values, slug: "y" } }, signal()), { status: "not_found" });
-  await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal());
-  saveReply = () => jsonResponse({ error: "service_unavailable", supportId: UUID }, 503);
-  await assert.rejects(adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...values, slug: "z" } }, signal()), (error) => error.name === "KamakuraCmsRequestError" && error.status === 503 && error.supportId === UUID);
-  saveReply = () => jsonResponse({ status: "saved", item: item({ id: "other-post" }) });
-  await assert.rejects(adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...values, slug: "w" } }, signal()), /contract/u);
-  await assert.rejects(adapter.loadItem({ collectionId: "posts", itemId: "../schema" }, signal()), /正しくありません/u);
-});
-
-test("CMS adapter: 共通 API が見つかると主要な GUI 操作を同じ version/operation 契約へ送る", async (t) => {
+test("CMS adapter: 主要な GUI 操作を共通 API の version/operation 契約へ送る", async (t) => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
   const definition = parseCollectionSchemaResult(schema()).collections[0];
   const calls = [];
+  const networkCalls = fakeBff(t, {});
   const commonApi = {
-    async discover() { calls.push(["discover"]); return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
     async readCmsSchema() { calls.push(["schema"]); return [definition]; },
     async listCmsItems(collectionId) { calls.push(["list", collectionId]); return []; },
     async readCmsItem(target) { calls.push(["read", target]); return item(); },
@@ -157,8 +94,11 @@ test("CMS adapter: 共通 API が見つかると主要な GUI 操作を同じ ve
   assert.deepEqual([published.status, published.item.version], ["publishing", "v3"]);
   assert.equal(calls.find(([name]) => name === "publish-plan")[4], false, "redirect 選択も計画へ渡す");
   assert.equal(calls.some(([name]) => name === "publish"), true);
-  assert.equal(calls.filter(([name]) => name === "discover").length, 1);
-  assert.equal(calls.some(([name]) => name === "legacy"), false);
+  const writes = calls.length;
+  const conflict = await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "unknown", values: { ...rawValues, title: "編集済み" } }, signal());
+  assert.deepEqual([conflict.status, conflict.item.version], ["conflict", "v1"]);
+  assert.deepEqual(calls.slice(writes).map(([name]) => name), ["read"]);
+  assert.equal(networkCalls.length, 0);
 });
 
 test("CMS adapter: 共通 API の作成応答が失われた場合は同じ operation ID で再送する", async () => {
@@ -167,7 +107,6 @@ test("CMS adapter: 共通 API の作成応答が失われた場合は同じ oper
   const operationIds = [];
   let attempts = 0;
   const commonApi = {
-    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
     async createCmsItem(_collectionId, operationId) {
       operationIds.push(operationId);
       if (attempts++ === 0) throw new Error("network timeout");
@@ -190,7 +129,6 @@ test("CMS adapter: 共通 API の保存・公開応答が失われた場合も�
   let saveAttempts = 0, prepareAttempts = 0, publishAttempts = 0, statusAttempts = 0;
   const publishStatusIds = [], appliedOperationIds = [];
   const commonApi = {
-    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
     async readCmsSchema() { return [definition]; },
     async readCmsItem() { return item(); },
     async saveCmsItem(_target, _version, operationId) {
@@ -235,16 +173,11 @@ test("CMS adapter: 共通 API の保存・公開応答が失われた場合も�
   assert.deepEqual([...operationIds.publish, ...publishStatusIds, ...appliedOperationIds].every((id) => id === operationIds.publish[0]), true);
 });
 
-test("CMS adapter: 公開・非公開・複製・削除・予約を契約の形で呼び、画面の parser が読める形で返す", async (t) => {
+test("CMS adapter: 非公開・複製・削除・予約を契約の形で呼び、画面の parser が読める形で返す", async (t) => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
   const definition = parseCollectionSchemaResult(schema()).collections[0];
   let duplicateReply;
   const calls = fakeBff(t, {
-    "GET /schema": () => jsonResponse(schema()),
-    "GET /collections/posts/items": () => jsonResponse({ status: "ready", collectionId: "posts", items: [] }),
-    "POST /collections/posts/items": () => jsonResponse({ status: "created", item: item({ id: "new-post", title: "" }, {}) }, 201),
-    "GET /collections/posts/items/morning-walk": () => jsonResponse({ status: "ready", item: item() }),
-    "POST /collections/posts/items/morning-walk/publish": () => jsonResponse({ status: "publishing", item: item({ status: "publishing", version: "v2" }) }, 202),
     "POST /collections/posts/items/morning-walk/unpublish": () => jsonResponse({ status: "publishing", item: item({ status: "publishing", version: "v3" }) }, 202),
     "POST /collections/posts/items/morning-walk/discard-draft": () => jsonResponse({ status: "saved", item: item({ version: "v4" }) }),
     "POST /collections/posts/items/morning-walk/schedule": () => jsonResponse({ status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z", version: "v5" }) }),
@@ -252,17 +185,9 @@ test("CMS adapter: 公開・非公開・複製・削除・予約を契約の形�
     "POST /collections/posts/items/morning-walk/duplicate": (body, count) => duplicateReply(body, count),
     "POST /collections/posts/items/morning-walk/remove": () => jsonResponse({ status: "removed" })
   });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi: { readCmsItem: async () => item() } });
   const target = { collectionId: "posts", itemId: "morning-walk" };
 
-  assert.equal((await adapter.listItems({ collectionId: "posts" }, signal())).status, "ready");
-  const created = parseCollectionCreateResult(await adapter.createItem({ collectionId: "posts" }, signal()), definition);
-  assert.deepEqual([created.status, created.item.id], ["created", "new-post"]);
-  assert.deepEqual(calls.at(-1).body, {});
-
-  const published = parseCollectionPublishResult(await adapter.publish({ ...target, version: "v1" }, signal()), definition, "morning-walk");
-  assert.deepEqual([published.status, published.item.version], ["publishing", "v2"]);
-  assert.deepEqual(calls.at(-1).body, { version: "v1" });
   // 非公開は上流の 202 publishing を、画面の保存の結果（saved）にする
   const unpublished = parseCollectionSaveResult(await adapter.unpublish({ ...target, version: "v2" }, signal()), definition, "morning-walk");
   assert.deepEqual([unpublished.status, unpublished.item.status], ["saved", "publishing"]);
@@ -283,11 +208,11 @@ test("CMS adapter: 公開・非公開・複製・削除・予約を契約の形�
   await assert.rejects(adapter.duplicate(target, signal()), /複製の結果/u);
 
   assert.deepEqual(parseCollectionRemoveResult(await adapter.remove({ ...target, version: "v7" }, signal()), definition, "morning-walk"), { status: "removed" });
-  // 削除した項目は覚えていないので、複製の前に読み直す
+  // 削除した項目は覚えていないので、複製の前に共通 API で読み直す
   duplicateReply = () => jsonResponse({ error: "not_found" }, 404);
   const beforeDuplicate = calls.length;
   assert.deepEqual(await adapter.duplicate(target, signal()), { status: "not_found" });
-  assert.deepEqual(calls.slice(beforeDuplicate).map(({ method, path }) => `${method} ${path}`), ["GET /collections/posts/items/morning-walk", "POST /collections/posts/items/morning-walk/duplicate"]);
+  assert.deepEqual(calls.slice(beforeDuplicate).map(({ method, path }) => `${method} ${path}`), ["POST /collections/posts/items/morning-walk/duplicate"]);
 });
 
 test("CMS adapter: 英語公開の raw page ID を厳密に検証し、人が読める route 名だけを画面へ渡す", async (t) => {
@@ -306,7 +231,7 @@ test("CMS adapter: 英語公開の raw page ID を厳密に検証し、人が読
       }
     })
   });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi: { readCmsItem: async () => item() } });
   const target = { collectionId: "posts", itemId: "morning-walk" };
   const read = parseCollectionEnglishPublicationsReadResult(await adapter.loadEnglishPublications(target, signal()));
   assert.deepEqual(read.englishPublications.map(({ key, label, publication }) => [key, label, publication.state]), [["post", "記事ページ", "retryable-failure"]]);
@@ -338,7 +263,7 @@ test("CMS adapter: 画像は intent の URL を確かめてから credentials �
     "POST /uploads/intent": (body) => intentReply(body),
     [`PUT ${UPLOAD_URL}`]: () => putReply()
   });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi: { readCmsItem: async () => item() } });
 
   const uploaded = parseCollectionUploadResult(await adapter.uploadImage({ collectionId: "posts", file }, signal()));
   assert.deepEqual(uploaded, { status: "uploaded", url: "https://kamakura-media.niho.life/uploads/2026/10/aaaaaaaaaaaaaaaa.png", width: 1200, height: 800 });
@@ -393,10 +318,7 @@ test("CMS adapter: CMS画像を素材IDで保存し、解決URLは表示だけ�
   const reference = { provider: "kamakura-upload", id: UUID };
   const preview = `/api/projects/project-kamakura/sites/kamakura/editor/assets/${UUID}/preview`;
   const file = new File([new Uint8Array([1, 2, 3])], "cover.png", { type: "image/png" });
-  const calls = fakeBff(t, {
-    "GET /schema": () => jsonResponse(schema()),
-    "GET /collections/posts/items/morning-walk": () => jsonResponse({ status: "ready", item: item({}, { ...rawValues, cover: reference }) })
-  });
+  const calls = fakeBff(t, {});
   let resolvedReferences = [];
   let uploadedRequest = null;
   const assetLibrary = {
@@ -409,7 +331,10 @@ test("CMS adapter: CMS画像を素材IDで保存し、解決URLは表示だけ�
       return { status: "uploaded", asset: { ...reference, siteId: "kamakura", thumbnailUrl: preview, width: 1200, height: 800 } };
     }
   };
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, assetLibrary });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, assetLibrary, commonApi: {
+    async readCmsSchema() { return parseCollectionSchemaResult(schema()).collections; },
+    async readCmsItem() { return item({}, { ...rawValues, cover: reference }); }
+  } });
   const definition = parseCollectionSchemaResult(await adapter.loadSchema(signal())).collections[0];
   const loaded = parseCollectionItemResult(await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal()), definition, "morning-walk");
   assert.deepEqual(loaded.item.values.cover, reference);
@@ -420,7 +345,7 @@ test("CMS adapter: CMS画像を素材IDで保存し、解決URLは表示だけ�
   const values = { ...loaded.item.values, cover: { ...reference } };
   const saved = await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: loaded.item.version, values }, signal());
   assert.equal(saved.status, "saved");
-  assert.equal(calls.some(({ method }) => method === "PUT"), false);
+  assert.equal(calls.length, 0);
 
   const uploaded = parseCollectionUploadResult(await adapter.uploadAsset({ collectionId: "posts", file }, signal()));
   assert.deepEqual(uploaded, { status: "uploaded", reference, width: 1200, height: 800 });
@@ -431,7 +356,7 @@ test("CMS adapter: CMS画像を素材IDで保存し、解決URLは表示だけ�
 
 test("CMS adapter: 画像の縮小は公開画像の置き場だけ、プレビューは公開中の項目だけサイトの URL で開く", async () => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi: { readCmsItem: async () => item() } });
   assert.equal(adapter.imageUrl("https://kamakura-media.niho.life/uploads/2026/10/a.jpg", 160), "https://kamakura-media.niho.life/cdn-cgi/image/width=160,format=auto/uploads/2026/10/a.jpg");
   assert.equal(adapter.imageUrl("https://kamakura-media.niho.life/uploads/a.jpg", 99999), "https://kamakura-media.niho.life/cdn-cgi/image/width=4096,format=auto/uploads/a.jpg");
   for (const url of ["https://cdn.example.test/a.jpg", "https://kamakura-media.niho.life/cdn-cgi/image/width=80/uploads/a.jpg", "https://kamakura-media.niho.life/uploads/a.jpg?v=1", "/media/a.jpg", "not a url"]) {
@@ -446,7 +371,7 @@ test("CMS adapter: 画像の縮小は公開画像の置き場だけ、プレビ�
   assert.equal(adapter.previewUrl("posts", { ...published, path: null }), null);
   assert.equal(adapter.previewUrl("posts", { ...published, path: "//evil.example/x" }), null);
   for (const siteOrigin of [null, "", "http://site.example.test", "https://site.example.test/base", "https://user:pass@site.example.test"]) {
-    assert.equal(createKamakuraCmsAdapter({ siteOrigin }).previewUrl("posts", published), null, String(siteOrigin));
+    assert.equal(createKamakuraCmsAdapter({ siteOrigin, commonApi: {} }).previewUrl("posts", published), null, String(siteOrigin));
   }
   assert.equal(adapter.isRichTextImageAllowed, undefined, "本文の画像は既定どおり https だけ");
 });
@@ -470,29 +395,29 @@ const nextSchema = () => ({
 const summaryOf = ({ version: _version, values: _values, ...rest }) => rest;
 const company = (overrides = {}, portfolio = [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/w1.jpg", caption: "一つ目" }]) => item({ id: "shop-a", title: "架空の店", path: "/companies/shop-a", status: "published", publishedAt: "2026-10-20T09:00:00Z", order: 1, ...overrides }, { name: "架空の店", portfolio });
 
-test("CMS adapter: 新しい schema（9 つの capabilities・gallery）を読み、gallery は行ごとに比べて直したときだけ送る", async (t) => {
+test("CMS adapter: 同じ内容の gallery は保存せず、編集した gallery は共通 API へ送る", async () => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
-  const definition = parseCollectionSchemaResult(nextSchema()).collections[1];
-  let saveReply = (body) => jsonResponse({ status: "saved", item: company({ version: "v2" }, body.values.portfolio) });
-  const calls = fakeBff(t, {
-    "GET /schema": () => jsonResponse(nextSchema()),
-    "GET /collections/companies/items/shop-a": () => jsonResponse({ status: "ready", item: company() }),
-    "PUT /collections/companies/items/shop-a/draft": (body) => saveReply(body)
-  });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
-  assert.deepEqual(parseCollectionSchemaResult(await adapter.loadSchema(signal())).collections[1].capabilities.reorder, true);
+  const definitions = parseCollectionSchemaResult(nextSchema()).collections;
+  const definition = definitions[1];
+  const calls = [];
+  const commonApi = {
+    async readCmsSchema() { return definitions; },
+    async readCmsItem() { return company(); },
+    async saveCmsItem(_target, version, _operationId, values) {
+      calls.push({ version, values });
+      return { status: "saved", item: company({ version: "v2" }, values.portfolio) };
+    },
+  };
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi });
+  assert.equal(parseCollectionSchemaResult(await adapter.loadSchema(signal())).collections[1].capabilities.reorder, true);
   const loaded = parseCollectionItemResult(await adapter.loadItem({ collectionId: "companies", itemId: "shop-a" }, signal()), definition, "shop-a");
   const same = loaded.item.values;
-  const before = calls.length;
-  // 中身が同じ新しい配列（画面の正規化）なら送らない
   await adapter.saveDraft({ collectionId: "companies", itemId: "shop-a", version: "v1", values: { ...same, portfolio: same.portfolio.map((entry) => ({ ...entry })) } }, signal());
-  assert.equal(calls.length, before);
+  assert.equal(calls.length, 0);
   const next = [...same.portfolio, { id: "", image: null, caption: "新しい行" }];
   const saved = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "companies", itemId: "shop-a", version: "v1", values: { ...same, portfolio: next } }, signal()), definition, "shop-a");
   assert.equal(saved.status, "saved");
-  assert.deepEqual(calls.at(-1).body, { version: "v1", values: { portfolio: next } });
-  saveReply = () => jsonResponse({ status: "saved", item: company({ version: "v3" }, [{ id: "w1", image: null, caption: "x", extra: 1 }]) });
-  await assert.rejects(adapter.saveDraft({ collectionId: "companies", itemId: "shop-a", version: "v2", values: { ...same, portfolio: [] } }, signal()), /contract/u);
+  assert.deepEqual(calls.at(-1), { version: "v1", values: { ...same, portfolio: next } });
 });
 
 test("CMS adapter: 転送・削除の移動先・予約のやり直し・並べ替え・まとめての操作を契約の形で呼ぶ", async (t) => {
@@ -503,22 +428,15 @@ test("CMS adapter: 転送・削除の移動先・予約のやり直し・並べ�
   let reorderReply = () => jsonResponse({ status: "publishing", items: [summaryOf(company({ order: 2 })), summaryOf(company({ id: "shop-b", order: 1 }))] }, 202);
   let bulkReply = () => jsonResponse({ status: "publishing", items: [summaryOf(item({ status: "publishing" }))] }, 202);
   const calls = fakeBff(t, {
-    "GET /schema": () => jsonResponse(nextSchema()),
-    "POST /collections/posts/items/morning-walk/publish": () => jsonResponse({ status: "publishing", item: item({ status: "publishing", version: "v2" }) }, 202),
     "POST /collections/posts/items/morning-walk/schedule": () => jsonResponse({ status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z", version: "v2" }) }),
     "POST /collections/posts/items/morning-walk/remove": () => removeReply(),
     "POST /collections/posts/items/morning-walk/retry-schedule": () => retryReply(),
     "POST /collections/companies/reorder": () => reorderReply(),
     "POST /collections/posts/bulk": () => bulkReply()
   });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi: { readCmsItem: async () => item() } });
   const target = { collectionId: "posts", itemId: "morning-walk" };
 
-  // redirect は画面が付けたときだけ送る
-  await adapter.publish({ ...target, version: "v1" }, signal());
-  assert.deepEqual(calls.at(-1).body, { version: "v1" });
-  assert.equal(parseCollectionPublishResult(await adapter.publish({ ...target, version: "v1", redirect: false }, signal()), definition, "morning-walk").status, "publishing");
-  assert.deepEqual(calls.at(-1).body, { version: "v1", redirect: false });
   await adapter.schedule({ ...target, version: "v1", at: "2026-11-01T09:00:00.000Z", redirect: true }, signal());
   assert.deepEqual(calls.at(-1).body, { version: "v1", at: "2026-11-01T09:00:00.000Z", redirect: true });
 

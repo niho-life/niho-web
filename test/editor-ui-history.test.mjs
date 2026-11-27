@@ -122,7 +122,7 @@ const settle = async () => { await flush(); await flush(); };
 const mountedAssetPanel = () => document.querySelector('[aria-label="アセットライブラリ"]');
 const assetPanel = () => { const panel = mountedAssetPanel(); return panel && !panel.closest("[hidden]") ? panel : null; };
 async function tool(name) { const label = name === "アセット" && !document.querySelector('.e-tools button[title="アセット"]') ? "アップロード" : name; const target = document.querySelector(`.e-tools button[title="${label}"]`); assert.ok(target, label); await act(async () => target.click()); await flush(); }
-const { createBrowserRecoveryStore, RecoveryTooLargeError } = await import("@niho/web/history");
+const { createBrowserRecoveryStore, RecoveryTooLargeError } = await import("../dist/history.js");
 const advance = async (t, ms) => { await act(async () => t.mock.timers.tick(ms)); await flush(); };
 async function waitFor(condition, description, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;

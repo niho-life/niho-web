@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { EDITING_OPERATIONS, withSiteStylesFeature } from "@niho/web/editing-api";
-import { createProjectEditorAdapter } from "@niho/web/project-editor";
+import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
 import { renderSitePageToHtml } from "@niho/web/server";
 
 async function loadKamakuraCatalogContract() {
@@ -589,11 +589,9 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   t.mock.method(console, "error", () => {});
   t.mock.method(console, "warn", (...args) => { bridgeLogs.push(args); });
 
-  const legacyBreakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
+  const breakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
   const env = {
-    DB: { prepare(sql) { return { sql, bind() { return this; }, async first() { return this.sql.includes("settings_json")
-      ? { settings_json: JSON.stringify(legacyBreakpointSettings), version: 7 }
-      : { allowed: 1, role: "editor" }; } }; } },
+    DB: { prepare(sql) { assert.doesNotMatch(sql, /site_breakpoint_settings/u); return { bind() { return this; }, async first() { return { allowed: 1, role: "editor" }; } }; } },
     ASSETS: { fetch: async () => new Response("not expected", { status: 500 }) },
     KAMAKURA_SITE: { fetch: async (request) => {
       if (bindingFailure) throw new Error("binding failure detail must not be logged");
@@ -841,8 +839,8 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
 
   const breakpointReadUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.read";
   const breakpointSaveUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.save";
-  let hostBreakpointSettings;
-  let hostBreakpointVersion;
+  let hostBreakpointSettings = breakpointSettings;
+  let hostBreakpointVersion = "host-breakpoints-v1";
   const breakpointRequests = [];
   bindingResponseFactory = async (request) => {
     const path = new URL(request.url).pathname;
@@ -855,26 +853,24 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     }
     if (path === breakpointSaveUpstreamPath && request.method === "PUT") {
       const input = breakpointRequests.at(-1).body;
-      if (hostBreakpointSettings === undefined ? input.expectedVersion !== "b.7" : input.expectedVersion !== hostBreakpointVersion) {
+      if (input.expectedVersion !== hostBreakpointVersion) {
         return Response.json({ error: "version_conflict" }, { status: 409 });
       }
       hostBreakpointSettings = input.settings;
-      hostBreakpointVersion = hostBreakpointVersion === undefined ? "host-breakpoints-v1" : "host-breakpoints-v2";
+      hostBreakpointVersion = "host-breakpoints-v2";
       return Response.json({ status: "saved", version: hostBreakpointVersion });
     }
     throw new Error(`unexpected breakpoint upstream request: ${request.method} ${path}`);
   };
   const breakpointRead = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
   assert.equal(breakpointRead.status, 200);
-  assert.deepEqual(await breakpointRead.json(), { settings: legacyBreakpointSettings, version: "host-breakpoints-v1" });
+  assert.deepEqual(await breakpointRead.json(), { settings: breakpointSettings, version: "host-breakpoints-v1" });
   assert.deepEqual(breakpointRequests.map(({ path, method }) => [path, method]), [
-    [breakpointReadUpstreamPath, "GET"], [breakpointSaveUpstreamPath, "PUT"]
-  ], "初回404のとき旧D1値をサイトAPIへ一度だけ引き継ぐ");
+    [breakpointReadUpstreamPath, "GET"]
+  ]);
   assert.deepEqual(breakpointRequests[0].claims.scope, ["site.settings.read"]);
-  assert.deepEqual(breakpointRequests[1].claims.scope, ["site.settings.write"]);
-  assert.deepEqual(breakpointRequests[1].body, { expectedVersion: "b.7", settings: legacyBreakpointSettings });
 
-  const nextBreakpointSettings = structuredClone(legacyBreakpointSettings);
+  const nextBreakpointSettings = structuredClone(breakpointSettings);
   nextBreakpointSettings.breakpoints[0].previewWidth = 800;
   const breakpointSave = await callEditingApi("/sites/kamakura/operations/site.breakpoints.save", "PUT", {
     expectedVersion: hostBreakpointVersion, settings: nextBreakpointSettings
@@ -885,14 +881,11 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.deepEqual(hostBreakpointSettings, nextBreakpointSettings);
   const breakpointReread = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
   assert.deepEqual(await breakpointReread.json(), { settings: nextBreakpointSettings, version: "host-breakpoints-v2" });
-  assert.equal(breakpointRequests.length, 4, "サイトAPIに移行後は旧D1を再読しない");
-
-  const legacyBreakpointUrl = "https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/breakpoints";
-  const legacyWrite = await workerModule.default.fetch(new Request(legacyBreakpointUrl, {
-    method: "PUT", headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
-    body: JSON.stringify({ settings: legacyBreakpointSettings, expectedVersion: "b.7" })
-  }), env);
-  assert.equal(legacyWrite.status, 405, "旧D1 routeは引継ぎ元の読み取り専用");
+  assert.equal(breakpointRequests.length, 3);
+  hostBreakpointSettings = undefined;
+  const missingBreakpoints = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
+  assert.equal(missingBreakpoints.status, 404);
+  assert.equal(breakpointRequests.length, 4, "404から保存を起動しない");
   bindingResponseFactory = null;
 
   let embedUpstream;
@@ -1032,12 +1025,12 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   await assertFailure(await callAssetList(), { status: 503, code: "service_unavailable", category: "service_binding_timeout", operation: "asset_list" });
   assert.equal(timeouts.at(-1), 12_000);
   // 公開は commit と読み直しを含むので、ほかの操作より長く待つ（kamakura-site#109）。
-  const release = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/business-plan/release", {
+  const release = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.release/business-plan?locale=ja", {
     method: "POST",
     headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
     body: JSON.stringify({ expectedVersion: "nw2:none:new:none", confirmationToken: "x" })
   }), env);
-  await assertFailure(release, { status: 503, code: "service_unavailable", category: "service_binding_timeout", operation: "release" });
+  await assertFailure(release, { status: 503, code: "service_unavailable", category: "upstream_invalid_response", upstreamStatus: 200, operation: "editing_api" });
   assert.equal(timeouts.at(-1), 30_000);
   bindingResponseFactory = null;
 

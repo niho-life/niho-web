@@ -674,6 +674,39 @@ test("niho-edit reviews a release plan and retries publication with the same ope
   assert.deepEqual(JSON.parse(retried.stdout).result, result);
 });
 
+test("niho-edit --studio sends read, CAS save and two-phase page release with Access service credentials", async () => {
+  const accessClientId = `${"c".repeat(32)}.access`, accessClientSecret = "fixture-secret";
+  const access = { studio: true, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret } };
+  const base = ["--studio"], args = [pageId, "--locale", locale];
+  const endpoint = (operation) => `${origin}/api/edit/v1/sites/${siteId}/operations/${operation}/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const read = await run([...base, "read", ...args], { ...access, expectedMethod: "GET", expectedUrl: endpoint("pages.read"),
+    result: { document: fixture, version: "v1" } });
+  assert.equal(read.exitCode, 0, read.stdout);
+  const document = { ...fixture, revision: fixture.revision + 1, title: "Updated through Studio" };
+  const saved = await run([...base, "save", ...args, "--json", "-"], {
+    ...access, expectedMethod: "PUT", expectedUrl: endpoint("pages.save"), stdin: read.stdout,
+    expectedBody: { expectedVersion: "v1", document: fixture },
+    result: { status: "saved", version: "v2", document }
+  });
+  assert.equal(saved.exitCode, 0, saved.stdout);
+  const plan = { target: { siteId, pageId, locale }, expectedVersion: "v2", action: "publish",
+    confirmationToken: "fixture-confirmation", domain: origin, changes: [] };
+  const prepared = await run([...base, "release-plan", ...args, "--action", "publish", "--json", "-"], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.release-plan"), stdin: saved.stdout,
+    expectedBody: { expectedVersion: "v2", action: "publish" }, result: { plan }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stdout);
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const result = { status: "released", operationId, version: "v3", document };
+  const applied = await run([...base, "release", ...args, "--json", "-", "--operation-id", operationId], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.release"), stdin: prepared.stdout,
+    expectedBody: { expectedVersion: "v2", confirmationToken: plan.confirmationToken, operationId }, result
+  });
+  assert.equal(applied.exitCode, 0, applied.stdout);
+  assert.deepEqual(JSON.parse(applied.stdout).result, result);
+});
+
 test("niho-edit prepares, applies and checks an idempotent multi-page release set", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-release-set-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

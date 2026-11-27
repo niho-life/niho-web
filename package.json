@@ -5,7 +5,6 @@
   "description": "Versioned public page documents and shared React/server renderers",
   "type": "module",
   "bin": {
-    "niho-studio": "cli/niho-studio.mjs",
     "niho-edit": "cli/niho-edit.mjs"
   },
   "files": [
@@ -36,10 +35,6 @@
       "types": "./dist/editing-client.d.ts",
       "import": "./dist/editing-client.js"
     },
-    "./builder": {
-      "types": "./dist/builder.d.ts",
-      "import": "./dist/builder.js"
-    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
@@ -60,46 +55,6 @@
       "types": "./dist/editor-model.d.ts",
       "import": "./dist/editor-model.js"
     },
-    "./pages": {
-      "types": "./dist/pages.d.ts",
-      "import": "./dist/pages.js"
-    },
-    "./history": {
-      "types": "./dist/history.d.ts",
-      "import": "./dist/history.js"
-    },
-    "./projects": {
-      "types": "./dist/projects.d.ts",
-      "import": "./dist/projects.js"
-    },
-    "./project-editor": {
-      "types": "./dist/project-editor-adapter.d.ts",
-      "import": "./dist/project-editor-adapter.js"
-    },
-    "./project-manager": {
-      "types": "./dist/project-manager.d.ts",
-      "import": "./dist/project-manager.js"
-    },
-    "./project-directory": {
-      "types": "./dist/project-directory.d.ts",
-      "import": "./dist/project-directory.js"
-    },
-    "./project-dashboard": {
-      "types": "./dist/project-dashboard.d.ts",
-      "import": "./dist/project-dashboard.js"
-    },
-    "./site-language-settings": {
-      "types": "./dist/site-language-settings.d.ts",
-      "import": "./dist/site-language-settings.js"
-    },
-    "./project-read-model": {
-      "types": "./dist/project-read-model.d.ts",
-      "import": "./dist/project-read-model.js"
-    },
-    "./collection-workspace": {
-      "types": "./dist/collection-workspace.d.ts",
-      "import": "./dist/collection-workspace.js"
-    },
     "./cms-delivery": {
       "types": "./dist/cms-delivery.d.ts",
       "import": "./dist/cms-delivery.js"
@@ -112,14 +67,6 @@
       "types": "./dist/collection-model.d.ts",
       "import": "./dist/collection-model.js"
     },
-    "./localization-workspace": {
-      "types": "./dist/localization-workspace.d.ts",
-      "import": "./dist/localization-workspace.js"
-    },
-    "./localization-workspace-model": {
-      "types": "./dist/localization-workspace-model.d.ts",
-      "import": "./dist/localization-workspace-model.js"
-    },
     "./assets": {
       "types": "./dist/assets.d.ts",
       "import": "./dist/assets.js"
@@ -127,14 +74,6 @@
     "./site-analytics": {
       "types": "./dist/site-analytics.d.ts",
       "import": "./dist/site-analytics.js"
-    },
-    "./site-apps": {
-      "types": "./dist/site-apps.d.ts",
-      "import": "./dist/site-apps.js"
-    },
-    "./ui-tokens": {
-      "types": "./dist/ui-tokens.d.ts",
-      "import": "./dist/ui-tokens.js"
     },
     "./analytics": {
       "types": "./dist/analytics.d.ts",

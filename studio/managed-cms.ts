@@ -16,7 +16,8 @@ import { parsePageDocument } from "../src/document.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
 import { validatePagePath } from "../src/pages.js";
-import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
+import { OPERATION_KEY_HEADER, UUID_V4 } from "../src/studio-cli-auth.js";
+import { MANAGED_CMS_EXTRA_OPERATIONS } from "../src/managed-cms-operations.js";
 import {
   CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RELEASE_BODY, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
   iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
@@ -40,12 +41,7 @@ const LEGACY = {
   "cms.operation-status": ["GET", "cms.read", 1]
 } as const;
 type LegacyOp = keyof typeof LEGACY;
-const EXTRA = {
-  "cms.items.create": "cms.edit", "cms.items.list": "cms.read", "cms.items.read": "cms.read",
-  "cms.preview.prepare": "cms.read", "cms.preview.read": "cms.read",
-  "cms.release.current": "cms.read", "cms.release.snapshot": "cms.read"
-} as const;
-type Operation = CmsV2Operation | keyof typeof EXTRA;
+type Operation = CmsV2Operation | keyof typeof MANAGED_CMS_EXTRA_OPERATIONS;
 const MUTATIONS = new Set<Operation>([
   "cms.items.create", "cms.items.save", "cms.items.remove", "cms.items.restore", "cms.schema.apply",
   "cms.release.apply", "cms.schedule.create", "cms.schedule.cancel", "cms.localization.items.command", "cms.localization.release.apply"
@@ -668,7 +664,7 @@ async function previewOperation(store: CmsStore, site: Site, operation: "cms.pre
 async function executeV2(request: Request, store: CmsStore, scope: CmsScope, route: string) {
   const operation = route as Operation;
   const capability = Object.hasOwn(CMS_V2_OPERATIONS, operation) ? CMS_V2_OPERATIONS[operation as CmsV2Operation]
-    : Object.hasOwn(EXTRA, operation) ? EXTRA[operation as keyof typeof EXTRA] : null;
+    : Object.hasOwn(MANAGED_CMS_EXTRA_OPERATIONS, operation) ? MANAGED_CMS_EXTRA_OPERATIONS[operation as keyof typeof MANAGED_CMS_EXTRA_OPERATIONS] : null;
   if (!capability && route !== "discover") return notFound();
   if (route === "discover") {
     if (request.method !== "GET") return error("method_not_allowed", 405);

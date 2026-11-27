@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createBrowserRecoveryStore, diffDocuments, parseRevisionEntry, parseRevisionPage, RecoveryTooLargeError } from "@niho/web/history";
+import { createBrowserRecoveryStore, diffDocuments, parseRevisionEntry, parseRevisionPage, RecoveryTooLargeError } from "../dist/history.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const doc = () => structuredClone(fixture);

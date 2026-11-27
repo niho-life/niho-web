@@ -1,6 +1,6 @@
 # 翻訳の画面（LocalizationWorkspace）と adapter の契約
 
-`LocalizationWorkspace` は、サイトの翻訳の残りを確認し、言語ごとまとめて公開する画面です。CMS の同じ項目で訳文を直すときは `LocalizationItemWorkspace` を `CollectionWorkspace.itemLanguages.renderTarget` に置きます。両方とも同じ adapter と項目エディタを使い、訳文・翻訳状態の正本を分けません。React 不要の型・runtime parser・印（置き換えてはいけない部分）の扱いは `@niho/web/localization-workspace-model` にあります。
+`LocalizationWorkspace` は、サイトの翻訳の残りを確認し、言語ごとまとめて公開する画面です。CMS の同じ項目で訳文を直すときは `LocalizationItemWorkspace` を `CollectionWorkspace.itemLanguages.renderTarget` に置きます。両方とも同じ adapter と項目エディタを使い、訳文・翻訳状態の正本を分けません。React 不要の型・runtime parser・印（置き換えてはいけない部分）の扱いは `src/localization-workspace-model.ts` にあります。
 
 この段（W1）は画面と、ホスト（サイト）が実装する adapter の契約だけです。Studio の BFF・サイトごとの adapter・切替のフラグ・描画用の枠（サイト側の静的なページ）は含みません。
 
@@ -27,7 +27,7 @@ Studio-native CMS はこの共通項目画面を CMS 独自の翻訳 overlay に
 ホスト独自の API につなぐ場合の例です。
 
 ```tsx
-import { LocalizationWorkspace, type LocalizationWorkspaceAdapter } from '@niho/web/localization-workspace';
+import { LocalizationWorkspace, type LocalizationWorkspaceAdapter } from '../src/localization-workspace.js';
 
 const adapter: LocalizationWorkspaceAdapter = {
   loadOverview: (signal) => host.post('/localization/overview', {}, signal),
@@ -60,7 +60,7 @@ const adapter: LocalizationWorkspaceAdapter = {
 
 `LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。`showReviewCurrent` は既定で `false` です。Studio-native CMS のように、公開前に人が訳文を確認する契約では `true` にし、訳文のある各フィールドに「この訳を確認済みにする」を表示できます。ホストが `onOpenRelated(itemKey)` を渡すと、同じ一覧行に含まれる別の保存単位へ移れます。移る前に保存待ちを完了し、失敗した場合は確認を出します。`relatedPageLink` を渡すと、その項目に関係するページの安全な URL を別タブで開けます。Kamakura の CMS は記事などの詳細ページの英語エディタに使います。
 
-部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
+部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `src/ui-tokens.ts` のトークン（`--nw-*`）を使います。
 
 ## 識別子と大きさの上限
 

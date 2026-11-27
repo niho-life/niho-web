@@ -31,9 +31,6 @@ await Promise.all([
     legalComments: "none",
     metafile: true
     });
-    // Kamakura は凍結中も読み取り専用で開く（kamakura-site#84）。Experience の editor は休止のまま入れない。
-    const forbidden = Object.keys(result.metafile.inputs).filter((input) => /studio\/(?:integration-entry|experience-editor)\.tsx$/u.test(input));
-    if (forbidden.length) throw new Error(`Frozen editor code entered the Studio client bundle: ${forbidden.join(", ")}`);
     // 最初に読む分（app.js と、そこから静的に import する chunk）に本文の編集部品・CMS と翻訳の画面を入れない
     const eager = new Set(), queue = [relative(process.cwd(), join(publicOutput, "assets", "app.js")).replaceAll("\\", "/")];
     while (queue.length) {

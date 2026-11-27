@@ -9,13 +9,14 @@ import { CMS_PAGE_BINDINGS_MAX_BYTES, parseCmsPageBindings } from "../dist/cms-p
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
-import { parseCmsLocalizationItemKey } from "../dist/cms-v2.js";
+import { CMS_V2_OPERATIONS, parseCmsLocalizationItemKey } from "../dist/cms-v2.js";
 import { editDocumentById } from "../dist/editor-model.js";
 import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pageOperationUsesNodeNames, parsePageOperation } from "../dist/editing-page-operations.js";
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
-import { OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "./operations.mjs";
+import { OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "../dist/studio-cli-auth.js";
+import { MANAGED_CMS_EXTRA_OPERATIONS } from "../dist/managed-cms-operations.js";
 import { isSafePublicUrl } from "../dist/validation-utils.js";
 import { capturePagePreview } from "./page-preview.mjs";
 import { NIHO_EDIT_USAGE as USAGE } from "./niho-edit-usage.mjs";
@@ -599,7 +600,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "normalize", "lint"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "normalize", "lint"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -693,13 +694,14 @@ async function main() {
   if (command === "cms-discover" || command === "cms-v2") {
     const discovery = command === "cms-discover";
     assertCommandOptions(values, discovery ? [] : ["json", "operation-id"]);
-    const operation = discovery ? null : OPERATIONS.find((entry) => entry.cmsVersion === 2 && entry.id === pageId);
-    if (!values.studio || extra.length || (discovery ? pageId !== undefined : !operation)) throw new CliError("invalid_arguments");
+    const operation = discovery ? null : pageId;
+    const knownOperation = Object.hasOwn(CMS_V2_OPERATIONS, operation) || Object.hasOwn(MANAGED_CMS_EXTRA_OPERATIONS, operation);
+    if (!values.studio || extra.length || (discovery ? pageId !== undefined : !knownOperation)) throw new CliError("invalid_arguments");
     const key = values["operation-id"];
     if (key !== undefined && !OPERATION_ID.test(key)) throw new CliError("invalid_arguments");
     const input = discovery ? undefined : await inputPageManagementJson(values.json,
-      operation.id === "cms.items.save" ? 128 * 1024 : 64 * 1024);
-    const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation.id}` : "capabilities"}`;
+      operation === "cms.items.save" ? 128 * 1024 : 64 * 1024);
+    const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation}` : "capabilities"}`;
     let result;
     try {
       result = await fetch(url, { method: operation ? "POST" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
@@ -708,7 +710,7 @@ async function main() {
     } catch { throw new CliError("transport_error"); }
     if (result.status >= 300 && result.status < 400) throw new CliError("redirect_response", result.status);
     const payload = await readJson(result.body, 2 * 1024 * 1024);
-    emit(payload, result.status, result.ok ? 0 : 1, operation?.id ?? command);
+    emit(payload, result.status, result.ok ? 0 : 1, operation ?? command);
     return;
   }
   if (command === "preview") { await runPagePreview(client, pageId, extra, values, baseOrigin, authorizationHeaders); return; }

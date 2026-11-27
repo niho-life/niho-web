@@ -10,7 +10,7 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
+const { CollectionWorkspace } = await import("../dist/collection-workspace.js");
 
 const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
 const advance = async (t, ms) => { await act(async () => t.mock.timers.tick(ms)); await flush(); };

@@ -5,7 +5,7 @@ import {
   parseLocalizationCommandResult, parseLocalizationImageResult, parseLocalizationItem, parseLocalizationItemResult, parseLocalizationListResult,
   parseLocalizationOverviewResult, parseLocalizationPreviewResult, parseLocalizationUnit, parsePreviewFrameMessage, previewFrameSrc, richSegments,
   segmentsToRichText, segmentsToText, textSegments, visibleLength, createOperationId, createPreviewNonce, isLocalizationOperationId,
-} from "@niho/web/localization-workspace-model";
+} from "../dist/localization-workspace-model.js";
 import { parseEditorLocaleReleaseState } from "../dist/editor-locale-release.js";
 import { previewFrameLayout } from "../dist/localization-workspace-preview.js";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";

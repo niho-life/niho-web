@@ -1,6 +1,6 @@
 # niho-web
 
-公開ページの構造化文書、検証、HTML / React 描画と、Studio の編集部品を提供する TypeScript リポジトリです。現在の製品方針は、鎌倉のサイトを Studio GUI と niho-edit から簡単に編集・公開することです。外部 CMS とは連携しません。
+公開ページの構造化文書、検証、HTML / React 描画と、Studio の編集部品を提供する TypeScript リポジトリです。現在の製品方針は、鎌倉のサイトを Studio GUI と `niho-edit --studio` から編集・公開することです。Experience は一覧と Dashboard で参照でき、editor は未接続です。外部 CMS とは連携しません。
 
 ## 利用開始
 
@@ -19,31 +19,16 @@ Node.js 22 以上を使います。
 | @niho/web/normalize | 文書の正規化 |
 | @niho/web/editing-api | 共通編集 wire 契約 |
 | @niho/web/editing-client | 編集 API client |
-| @niho/web/builder | 動的 block 契約 |
 | @niho/web/react | React renderer |
 | @niho/web/presentation-runtime | 公開ページの対話機能 |
 | @niho/web/server | HTML 描画 |
 | @niho/web/editor | Studio 編集画面 |
 | @niho/web/editor-model | React 不要の編集操作 |
-| @niho/web/pages | ページとサイト設定 |
-| @niho/web/history | 版履歴の型と保存 |
-| @niho/web/projects | Project の型 |
-| @niho/web/project-editor | Project 単位の編集 adapter |
-| @niho/web/project-manager | Project 管理 |
-| @niho/web/project-directory | Project 検索 |
-| @niho/web/project-dashboard | Dashboard |
-| @niho/web/site-language-settings | 言語設定 UI |
-| @niho/web/project-read-model | Project 読取モデル |
-| @niho/web/collection-workspace | Collection 編集 UI |
 | @niho/web/cms-delivery | CMS 公開 |
 | @niho/web/cms-v2 | CMS 定義 |
 | @niho/web/collection-model | Collection 型 |
-| @niho/web/localization-workspace | 翻訳編集 UI |
-| @niho/web/localization-workspace-model | 翻訳編集モデル |
 | @niho/web/assets | 素材参照 |
 | @niho/web/site-analytics | サイト分析の接続 |
-| @niho/web/site-apps | サイト機能の設定 |
-| @niho/web/ui-tokens | UI tokens |
 | @niho/web/analytics | 分析モデル |
 | @niho/web/analytics-data | 分析データ |
 | @niho/web/localization | 翻訳モデル |

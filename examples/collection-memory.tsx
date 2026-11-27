@@ -1,4 +1,4 @@
-import type { CollectionAdapter, CollectionDefinition, CollectionItem } from "@niho/web/collection-workspace";
+import type { CollectionAdapter, CollectionDefinition, CollectionItem } from "../dist/collection-workspace.js";
 
 // 公開できる架空のデータだけを使う。認証・本番 API・実在の人やサイトには接続しない。変更はこのタブのメモリだけ。
 const now = () => new Date().toISOString();

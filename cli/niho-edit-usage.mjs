@@ -1,6 +1,6 @@
 export const NIHO_EDIT_USAGE = `niho-edit --origin <https-origin> --site <site-id> mcp
 niho-edit --origin <https-origin> --site <site-id> discover
-niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
+niho-edit [--studio] --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
 niho-edit --origin <https-origin> --site <site-id> outline <page-id> --locale <locale> [--node <id>] [--depth <n>]
 niho-edit --origin <https-origin> --site <site-id> find <page-id> --locale <locale> (--text <text> | --name <name> | --tag <tag> | --style <property=value> | --uses-token <name> | --block <id> | --node <id>)
 niho-edit --origin <https-origin> --site <site-id> find --url <public-url> --locale <locale> --node <data-nw-node>
@@ -16,9 +16,9 @@ niho-edit [--studio] --origin <https-origin> --site <site-id> normalize resume -
 niho-edit [--studio] --origin <https-origin> --site <site-id> normalize undo --json <記録ファイル>
 niho-edit [--studio] --origin <https-origin> --site <site-id> normalize verify --json <記録ファイル>
 niho-edit --origin <https-origin> --site <site-id> preview <page-id> --locale <locale> --widths 375,768,1280 [--compare published] [--out <dir>]
-niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
-niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>] [--styles-version <published-version> --site-publication-epoch <epoch>]
-niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
+niho-edit [--studio] --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
+niho-edit [--studio] --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>] [--styles-version <published-version> --site-publication-epoch <epoch>]
+niho-edit [--studio] --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> page-release-set-plan --json <items-file|-> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> page-release-set-apply --json <plan-file|->
 niho-edit --origin <https-origin> --site <site-id> page-release-set-status --operation-id <uuid-v4>

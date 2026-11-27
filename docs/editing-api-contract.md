@@ -4,11 +4,11 @@
 
 `@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Kamakura の Studio GUI と `niho-studio pages.read` は editor snapshot profile から共通APIでページsnapshotを取得します。日本語キャンバスは `editorState` を、英語キャンバスは `presentation`（alias URL解決用の `presentation.links` を含む）を必須とし、欠けた場合はページを開きません。専用snapshot routeから不足分を補うfallbackは使いません。`niho-studio` は同じprofileを要求し、CLI利用者へ共通APIの応答を返します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
+Kamakura の Studio GUI は editor snapshot profile から共通APIでページsnapshotを取得します。日本語キャンバスは `editorState` を、英語キャンバスは `presentation`（alias URL解決用の `presentation.links` を含む）を必須とし、欠けた場合はページを開きません。専用snapshot routeから不足分を補うfallbackは使いません。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
 
 ## 操作カタログ
 
-ホストは `createPageEditingApi(adapter)` の返すRequest handlerを、自分が選んだoriginとpathへ接続します。既定pathは `/api/edit/v1` です。操作ID・権限・method・path・input/result schema・安定エラーの正本は `EDITING_OPERATIONS` です。公開する操作IDの型もこのcatalogから導出し、discoveryとクライアント型が別々の一覧にならないようにします。1つのWorkerで複数サイトを扱う場合は `createRegisteredPageEditingApi([{ siteIds, adapter }, ...])` を使い、完全一致するsite IDを登録済みadapterへ振り分けます。登録重複は起動時に拒否し、未登録site IDは404になります。ホストごとの処理でsite名を条件分岐する必要はありません。`GET /sites/{siteId}/capabilities` は、その認証主体が使える操作ID・権限・HTTP method・path・JSON Schema・安定エラー一覧を返します。
+ホストは `createPageEditingApi(adapter)` の返すRequest handlerを、自分が選んだoriginとpathへ接続します。既定pathは `/api/edit/v1` です。操作ID・権限・method・path・input/result schema・安定エラーの正本は `EDITING_OPERATIONS` です。公開する操作IDの型もこのcatalogから導出し、discoveryとクライアント型が別々の一覧にならないようにします。`GET /sites/{siteId}/capabilities` は、その認証主体が使える操作ID・権限・HTTP method・path・JSON Schema・安定エラー一覧を返します。
 
 サイト共通スタイル拡張は `GET /sites/{siteId}/capabilities?features=site.styles` でopt-inします。対応hostは実装済みadapterの操作だけを追加し、queryなしdiscoveryとfeature queryなしrequestでは従来のoperation一覧・schemaを維持します。対応clientは拡張schemaを使う `pages.*` requestにもfeature queryを付け、旧hostがqueryを拒否した場合はlegacy discoveryへfallbackしてstyle operationや拡張fieldを送信しません。
 
@@ -269,8 +269,6 @@ Flex / Grid などで見た目が変わりうる場合は、操作に `"allowLay
 - CMS操作を公開するhostは `readCmsSchema` / `listCmsItems` / `readCmsItem` / `createCmsItem` / `saveCmsItem` / `prepareCmsPublish` / `publishCmsItem` / `readCmsOperationStatus` を実装し、定義済みCollection値・scope権限・expectedVersion CASを検証する。create/save/publishはactor・operation ID・同一入力の結果を原子的に記録し、別入力の再利用を拒否する。
 - 素材操作を公開するhostは `listAssets` / `listAssetUsages` / `resolveAssets` / `updateAsset` / `createAssetUploadIntent` / `deleteAsset` / `restoreAsset` を実装し、provider・site・actorの権限、実データのMIME/サイズ/内容、expectedVersion、使用中素材を保存層で検証する。一時tokenは一つのassetと一回のPUTに限定し、actor・委任元・asset ID・version・結果を監査する。
 - actor、委任元、操作ID、対象、対象version、結果をホストの監査記録へ原子的に結び付ける。公開・配備はそれぞれ別権限の操作としてホストが実装する。
-
-複数サイトのWorkerでは `createRegisteredPageEditingApi` の登録表を使い、各サイトの認証・権限・保存先を個別adapterへ閉じ込めます。単一サイトだけを配信するホストは `createPageEditingApi` を直接mountできます。どちらも同じ操作カタログ、wire schema、入力検証、安定エラーを使います。
 
 Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分のrouterで強制します。公開HTMLにcredential・内部ID・Git source pathを含めません。Handlerは認証方法、DB、CMS、素材、翻訳、Gitへ依存しないので、Studioを使わないホストも同じ契約を組み込めます。
 

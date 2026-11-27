@@ -223,15 +223,6 @@ test("both adjacent pages start prefetching before the first document finishes l
   }
 });
 
-test("responsive proposal control is absent without the optional host adapter", async () => {
-  const absent = await setup();
-  try { assert.equal(button("レスポンシブ提案"), undefined); }
-  finally { await absent.cleanup(); }
-  const present = await setup({ adapter: { responsiveProposal: { propose: async (request) => ({ fingerprint: request.fingerprint, changes: [] }) } } });
-  try { assert.ok(button("レスポンシブ提案")); }
-  finally { await present.cleanup(); }
-});
-
 test("breakpoint settings dialog analyzes every page and reports unused and nearby widths", async () => {
   const reads = [];
   const page = (pageId, width) => ({ schemaVersion: 1, siteId: "demo", pageId, locale: "ja-JP", revision: 1, title: pageId,
@@ -303,36 +294,6 @@ test("breakpoint analysis keeps the error state when another read resolves after
     await flush();
     assert.match(analysis.textContent, /問い合わせページの読込に失敗しました/u);
     assert.doesNotMatch(analysis.textContent, /確認中/u);
-  } finally { await app.cleanup(); }
-});
-
-test("responsive proposal reviews exact changes, applies once and undo restores them", async () => {
-  let requested;
-  const app = await setup({ adapter: { responsiveProposal: { propose: async (request) => {
-    requested = structuredClone(request);
-    return { fingerprint: request.fingerprint, changes: [
-      { nodeId: "hero", breakpoint: 768, property: "padding", value: "2rem" },
-      { nodeId: "heading", breakpoint: 1280, property: "fontSize", value: 48 }
-    ] };
-  } } } });
-  try {
-    await click("レスポンシブ提案");
-    assert.match(document.querySelector('[role="dialog"]').textContent, /ページ全体/u);
-    await click("提案を依頼");
-    assert.deepEqual(requested.target, { siteId: "demo", pageId: "home", locale: "ja-JP" });
-    assert.deepEqual(requested.scope, { type: "page" });
-    assert.deepEqual(requested.breakpoints, [768, 1280]);
-    const review = document.querySelector(".e-responsive-proposal-review");
-    assert.match(review.textContent, /768px以上.*内側余白.*指定なし.*2rem/us);
-    assert.match(review.textContent, /1280px以上.*文字サイズ.*指定なし.*48/us);
-    await click("この変更を適用");
-    await click("下書き保存");
-    assert.equal(app.calls.saves.at(-1).document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations.padding, "2rem");
-    assert.equal(app.calls.saves.at(-1).document.body[0].children[0].style.responsive.find((entry) => entry.minWidth === 1280).declarations.fontSize, 48);
-    await click("元に戻す");
-    await click("下書き保存");
-    assert.equal(app.calls.saves.at(-1).document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations.padding, undefined);
-    assert.equal(app.calls.saves.at(-1).document.body[0].children[0].style, undefined);
   } finally { await app.cleanup(); }
 });
 
@@ -1522,5 +1483,81 @@ test("release confirmation shows the public URL and the search result informatio
     await click("公開");
     const text = dialog().textContent;
     for (const expected of ["公開URL", "https://example.test/", "検索結果に出る情報", fixture.title, "公開する説明文", "表示する", "現在の見出し"]) assert.ok(text.includes(expected), expected);
+  } finally { await app.cleanup(); }
+});
+
+test("page switches reset uncontrolled canvas DOM state without replacing the iframe", async () => {
+  const page = (pageId) => ({ ...structuredClone(fixture), pageId, body: [{ type: "element", id: "shared-details", tag: "details", children: [
+    { type: "element", id: "shared-summary", tag: "summary", children: [{ type: "text", text: "ページ内容" }] },
+    { type: "element", id: "shared-content", tag: "p", children: [{ type: "text", text: "同じIDの内容" }] }
+  ] }] });
+  const app = await setup({ adapter: { readDocument: async (target) => ({ document: page(target.pageId), version: `v-${target.pageId}` }) } });
+  try {
+    const frame = document.querySelector("iframe"), body = canvasBody(), originalDetails = body.querySelector("details");
+    assert.ok(originalDetails);
+    originalDetails.open = true;
+    await clickPage("別ページ");
+    const currentDetails = canvasBody().querySelector("details");
+    assert.equal(document.querySelector("iframe"), frame, "page changes keep the same iframe");
+    assert.equal(canvasBody(), body, "the iframe document remains mounted");
+    assert.equal(currentDetails, originalDetails, "matching nodes are reconciled instead of remounted");
+    assert.equal(currentDetails.open, false, "the next page starts from its document state");
+  } finally { await app.cleanup(); }
+});
+
+test("page switches reset uncontrolled form fields while reusing matching DOM nodes", async () => {
+  const page = (pageId) => ({ ...structuredClone(fixture), pageId, body: [{ type: "element", id: "shared-form", tag: "form", attrs: { name: "contact" }, children: [
+    { type: "element", id: "shared-input-label", tag: "label", attrs: { htmlFor: "shared-input-control" }, children: [{ type: "text", text: "名前" }] },
+    { type: "element", id: "shared-input", tag: "input", attrs: { id: "shared-input-control", name: "name", type: "text", value: "initial" }, children: [] },
+    { type: "element", id: "shared-checkbox-label", tag: "label", attrs: { htmlFor: "shared-checkbox-control" }, children: [{ type: "text", text: "通知を受け取る" }] },
+    { type: "element", id: "shared-checkbox", tag: "input", attrs: { id: "shared-checkbox-control", name: "notify", type: "checkbox", checked: true }, children: [] },
+    { type: "element", id: "shared-textarea-label", tag: "label", attrs: { htmlFor: "shared-textarea-control" }, children: [{ type: "text", text: "説明" }] },
+    { type: "element", id: "shared-textarea", tag: "textarea", attrs: { id: "shared-textarea-control", name: "description" }, children: [{ type: "text", text: "saved" }] },
+    { type: "element", id: "shared-select-label", tag: "label", attrs: { htmlFor: "shared-select-control" }, children: [{ type: "text", text: "分類" }] },
+    { type: "element", id: "shared-select", tag: "select", attrs: { id: "shared-select-control", name: "category" }, children: [
+      { type: "element", id: "shared-option-one", tag: "option", attrs: { value: "one", disabled: true }, children: [{ type: "text", text: "一" }] },
+      { type: "element", id: "shared-option-two", tag: "option", attrs: { value: "two" }, children: [{ type: "text", text: "二" }] },
+    ] },
+  ] }] });
+  const app = await setup({ adapter: { readDocument: async (target) => ({ document: page(target.pageId), version: `v-${target.pageId}` }) } });
+  try {
+    const input = canvasBody().querySelector('input[type="text"]'), checkbox = canvasBody().querySelector('input[type="checkbox"]');
+    const textarea = canvasBody().querySelector("textarea"), select = canvasBody().querySelector("select");
+    assert.ok(input); assert.ok(checkbox); assert.ok(textarea); assert.ok(select);
+    input.value = "typed"; checkbox.checked = false; textarea.value = "typed"; select.selectedIndex = 1;
+    await clickPage("別ページ");
+    assert.equal(canvasBody().querySelector("input"), input);
+    assert.equal(canvasBody().querySelector("select"), select);
+    assert.equal(canvasBody().querySelector("textarea"), textarea);
+    assert.equal(input.value, "initial");
+    assert.equal(checkbox.checked, true);
+    assert.equal(textarea.value, "saved");
+    assert.equal(select.selectedIndex, 1, "the first enabled option is selected");
+  } finally { await app.cleanup(); }
+});
+
+test("page switches reset only nodes owned by the current page in a shared presentation", async () => {
+  const page = (pageId) => ({ ...structuredClone(fixture), pageId, body: [
+    { type: "element", id: "shared-form", tag: "form", attrs: { name: "contact" }, children: [
+      { type: "element", id: "shared-select-label", tag: "label", attrs: { htmlFor: "category" }, children: [{ type: "text", text: "分類" }] },
+      { type: "element", id: "shared-node-id", tag: "select", attrs: { id: "category", name: "category" }, children: [
+        { type: "element", id: "shared-option-disabled", tag: "option", attrs: { value: "disabled", disabled: true }, children: [{ type: "text", text: "無効" }] },
+        { type: "element", id: "shared-option-enabled", tag: "option", attrs: { value: "enabled" }, children: [{ type: "text", text: "有効" }] },
+      ] },
+    ] },
+  ] });
+  const shared = (pageId) => ({ ...structuredClone(fixture), pageId, body: [{ type: "element", id: "shared-node-id", tag: "div", children: [] }] });
+  const presentation = { schemaVersion: 1, siteId: "demo", locale: "ja-JP", version: "presentation-v1", reset: "neutral-v1", tokens: {}, fonts: [],
+    shared: { header: shared("shared-header"), footer: shared("shared-footer") } };
+  const app = await setup({ adapter: { readDocument: async (target) => ({ document: page(target.pageId), version: "v-" + target.pageId, presentation }) } });
+  try {
+    const frame = document.querySelector("iframe");
+    assert.ok(frame, document.querySelector(".e-notice")?.textContent);
+    const select = frame.contentDocument.body.querySelector("select");
+    assert.ok(select);
+    select.selectedIndex = 0;
+    await clickPage("別ページ");
+    assert.equal(frame.contentDocument.body.querySelector("select"), select);
+    assert.equal(select.selectedIndex, 1, "footer nodes with colliding IDs do not shadow page nodes");
   } finally { await app.cleanup(); }
 });

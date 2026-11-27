@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createRegisteredPageEditingApi, EDITING_CAPABILITIES, EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createPageEditingApi, EDITING_CAPABILITIES, EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { createPageEditingApiClient, EditingApiClientError } from "@niho/web/editing-client";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
@@ -33,7 +33,7 @@ function fixture(grants = capabilities, overrides = {}) {
     return result;
   };
   const currentOverviewVersion = () => `o${memory.state.overviewVersion}`;
-  const api = createRegisteredPageEditingApi([{ siteIds: [siteId], adapter: {
+  const api = createPageEditingApi({
     async authenticate(request) { return request.headers.get("Authorization") === "Bearer test-token" ? auth : null; },
     async authorize(actor, capability, scope) {
       seen.push({ actor, capability, scope });
@@ -66,7 +66,7 @@ function fixture(grants = capabilities, overrides = {}) {
       "localization.settings.save": write((input) => adapter.saveSettings(input, signal)),
       ...overrides,
     },
-  } }]);
+  });
   const headers = { Authorization: "Bearer test-token" };
   const client = createPageEditingApiClient({ origin, siteId, headers, fetch: (url, init) => api(new Request(url, init)) });
   const send = async (method, path, payload, opts = {}) => {
@@ -220,7 +220,7 @@ test("localization rejects cross-site and malformed inputs without invoking host
   assert.deepEqual(await send("GET", opPath("localization.overview"), undefined, { noAuth: true }),
     { status: 401, body: { error: "authentication_required" } });
   assert.deepEqual(await send("GET", opPath("localization.overview").replace(siteId, "other-site")),
-    { status: 404, body: { error: "not_found" } });
+    { status: 403, body: { error: "forbidden" } });
   const command = opPath("localization.items.command");
   for (const payload of [
     { ...commandInput, siteId: "other-site" }, { ...commandInput, siteId, actor: { subject: "override" } },

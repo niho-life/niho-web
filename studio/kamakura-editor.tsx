@@ -507,10 +507,9 @@ export function kamakuraEditorInitialTarget(search: string): EditorTarget | unde
   return { siteId: KAMAKURA_EDITOR_SITE_ID, pageId, locale: "en" };
 }
 
-export function KamakuraEditor({ project, environment, initialLoad }: {
-  readonly project: Project; readonly environment: string; readonly initialLoad?: () => KamakuraEditorLoad | undefined;
+export function KamakuraEditor({ project, initialLoad }: {
+  readonly project: Project; readonly initialLoad?: () => KamakuraEditorLoad | undefined;
 }) {
-  if (environment !== "production") throw new Error("Kamakura editor environment is not registered");
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [status, setStatus] = useState<EditorApiStatus | null>(null);
   const [reload, setReload] = useState(0);

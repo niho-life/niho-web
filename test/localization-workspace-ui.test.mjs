@@ -10,7 +10,7 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { LocalizationItemWorkspace, LocalizationWorkspace } = await import("@niho/web/localization-workspace");
+const { LocalizationItemWorkspace, LocalizationWorkspace } = await import("../dist/localization-workspace.js");
 
 const M = (id) => `⟦${id}⟧`;
 const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });

@@ -23,11 +23,11 @@ type SiteStyles = {
   textStyles?: Record<string, TextStyle>;   // 最大 64 件。規則はページの textStyles と同じ
 };
 
-/** @niho/web/pages の SiteSettings はこれを含む。 */
+/** サイト設定の SiteSettings はこれを含む。 */
 type SiteSettings = SiteStyles & { title: string; description?: string; ogImage?: PageImage; favicon?: string; locale: string; noindex?: boolean };
 ```
 
-- `parseSiteSettings`（`@niho/web/pages`）は公開情報とスタイルを一緒に検証し、未知の項目を拒否します。`parseSiteStyles`（`@niho/web/core`）はスタイル部分だけを検証します。
+- `parseSiteSettings`（`src/pages.ts`）は公開情報とスタイルを一緒に検証し、未知の項目を拒否します。`parseSiteStyles`（`@niho/web/core`）はスタイル部分だけを検証します。
 - サイトの文字スタイルは**サイトの token だけ**で検証します。ページの token でサイトの文字スタイルの参照を補うことはできません。
 - 値の許可範囲（HEX と限定した色名、長さの単位と上限、フォント名、有限数、文字スタイルのプロパティ）は[文書契約](document-contract.md#トークンと-style)と `src/style-values.ts` の検証が正です。
 

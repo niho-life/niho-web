@@ -5,7 +5,7 @@ import {
   parseLocaleReleaseApplyResult, parseLocaleReleasePrepareResult, parseLocaleReleaseStateResult, parseLocalizationCatalogResult, parseLocalizationCommandResult,
   parseLocalizationImageResult, parseLocalizationItemResult, parseLocalizationJobResult, parseLocalizationListResult, parseLocalizationOverviewResult,
   parseLocalizationPreviewResult, parseLocalizationSettingsResult, parseLocalizationTranslationResult
-} from "@niho/web/localization-workspace-model";
+} from "../dist/localization-workspace-model.js";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
 // 架空の値だけを使う（実在の原稿・人・内部の key は書かない）。上流の応答の形は W1 のデモ用のメモリの adapter から作る。
