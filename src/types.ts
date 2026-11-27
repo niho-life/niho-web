@@ -76,6 +76,14 @@ export type ElementTag =
   | "details" | "summary"
   | "form" | "label" | "input" | "textarea" | "select" | "option" | "button" | "fieldset" | "legend";
 export type ElementAttributes = Record<string, string | number | boolean>;
+/** @internal Server-generated image hints for immutable public HTML, keyed by node ID. */
+export type PublicImageRenderHints = {
+  srcSet?: string;
+  sizes?: "100vw";
+  fetchPriority?: "high";
+  loading?: "lazy";
+  decoding?: "async";
+};
 /** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
 export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";
 /** 標準埋め込みは trusted renderer が知る静的 provider だけ。blank / url も iframe 権限は保存しない。 */

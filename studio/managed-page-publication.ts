@@ -41,6 +41,7 @@ function prefixedDocument(document: PageDocument, prefix: string, siteStyles?: S
   return parsePageDocument(copy, managedBlockContracts, siteStyles ? { siteStyles } : {});
 }
 function escapeAttribute(value: string): string { return value.replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!); }
+const PUBLIC_SYSTEM_FONT_STYLE = '<style>html{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic","Meiryo",sans-serif}</style>';
 
 function managedSeoImageUrl(value: string, origin: string, prefix: string): string {
   const source = /^https:\/\//iu.test(value) ? value
@@ -169,9 +170,10 @@ export async function renderManagedPage(input: {
     + managedStructuredData(rendered, publicUrl, origin, siteName, policy.seo);
   const body = renderPageToHtml(rendered, managedPublicBlocks, {
     blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] }), assets: plan.assets,
+    imageHints: plan.imageHints,
     ...(input.siteStyles ? { siteStyles: input.siteStyles } : {})
   });
-  const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}${runtime.scripts}</head><body>${body}</body></html>`;
+  const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${PUBLIC_SYSTEM_FONT_STYLE}${head}${runtime.scripts}</head><body>${body}</body></html>`;
   return { html, contentSecurityPolicy: runtime.csp, metadata, document: rendered };
 }
 
