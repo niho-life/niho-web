@@ -20,10 +20,11 @@ import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoin
 import { Dialog } from "./editor-dialog.js";
 import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart } from "./editor-pages.js";
 import { PageReleaseSetDialog } from "./editor-release-set.js";
+import { parseSiteSettings } from "./pages.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
-import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
+import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorSiteSettingsSnapshot, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
 import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
@@ -733,6 +734,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 文書と同じ読込要求で得た設定は、設定パネル側の独立読込が失敗してもそのセッションの描画・検証に使える。
   const activeSiteStyles = siteSettings.status === "ready" && siteSettings.settings ? siteSettings.styles : session?.siteStyles ?? siteSettings.styles;
   const siteSettingsRef = useRef(siteSettings); siteSettingsRef.current = siteSettings;
+  const sitePublicationRefreshId = useRef(0);
   const [problem, setProblem] = useState<SaveProblem | null>(null), [savedAt, setSavedAt] = useState<Date | null>(null), [loadEpoch, setLoadEpoch] = useState(0);
   const [conflictView, setConflictView] = useState(0), [recoveryCompare, setRecoveryCompare] = useState(false), [autosaveOn, setAutosaveOn] = useState(true);
   // 訳文の原文検証・再構成には保存済みのサイト共通スタイルを使う。設定を読むホストでは読込が終わるまで待ち、読めなければ文書と同じ読込で得た設定か文書単体で進める。
@@ -910,7 +912,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       preloadPage(page);
     }
   }, [adapter, preloadPage]);
-  const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean; metric?: "load" | "page-switch" }): Promise<boolean> => {
+  const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean; metric?: "load" | "page-switch"; siteSettings?: EditorSiteSettingsSnapshot }): Promise<boolean> => {
     const metric = options?.metric ?? "load";
     const measurement = metric === "load" && initialLoadPerformance.current
       ? initialLoadPerformance.current
@@ -925,7 +927,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     try {
       const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
       const currentSiteSettings = siteSettingsRef.current;
-      const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
+      const cachedSiteSettings = options?.siteSettings
+        ? { settings: parseSiteSettings(options.siteSettings.settings), version: options.siteSettings.version,
+          ...(options.siteSettings.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: options.siteSettings.publishedStylesVersion }),
+          ...(options.siteSettings.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: options.siteSettings.sitePublicationEpoch }) }
+        : currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
         ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version,
           ...(currentSiteSettings.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: currentSiteSettings.publishedStylesVersion }),
           ...(currentSiteSettings.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: currentSiteSettings.sitePublicationEpoch }) } : undefined;
@@ -1709,6 +1715,19 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     } catch (error) { if (!controller.signal.aborted) setNotice(releasePreparationNotice(error)); }
     finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
   }
+  async function refreshSitePublicationContext(targetSiteId: string, signal: AbortSignal): Promise<EditorSiteSettingsSnapshot | undefined> {
+    if (!adapter.readSiteSettings) return undefined;
+    const refreshId = ++sitePublicationRefreshId.current;
+    try {
+      const snapshot = await adapter.readSiteSettings(targetSiteId, signal);
+      if (signal.aborted || siteIdRef.current !== targetSiteId || sitePublicationRefreshId.current !== refreshId) return undefined;
+      siteSettingsRef.current.acceptSnapshot(snapshot);
+      return snapshot;
+    } catch {
+      if (!signal.aborted && siteIdRef.current === targetSiteId && sitePublicationRefreshId.current === refreshId) siteSettingsRef.current.reload();
+      return undefined;
+    }
+  }
   async function release() {
     const current = sessionRef.current;
     if (!current || current.readOnly || current.hasSavedDraft === false || siteSettings.dirty || siteSettings.busy || !plan || !confirmed || action.current || busy || dirty || libraryDirty || hasInput || targetMode || !localizationReady) return;
@@ -1718,9 +1737,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { setNotice("公開が競合しました（409）。編集内容を保持しています。最新状態を確認してからやり直してください。"); setPlan(null); return; }
       replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings)); setSelection(null); setFieldEpoch((value) => value + 1); setPlan(null); setProblem(null);
-      setNotice(result.snapshot.englishPublication
+      const successNotice = result.snapshot.englishPublication
         ? plan.action === "rollback" ? "日本語ページを指定した版に戻しました。英語版の状態は上の表示で確認してください。" : "日本語ページを公開しました。英語版の状態は上の表示で確認してください。"
-        : plan.action === "rollback" ? "指定した版に戻しました。" : "公開しました。");
+        : plan.action === "rollback" ? "指定した版に戻しました。" : "公開しました。";
+      const settingsSnapshot = await refreshSitePublicationContext(current.target.siteId, controller.signal);
+      setNotice(settingsSnapshot || !adapter.readSiteSettings ? successNotice : `${successNotice} サイト設定の公開版を更新できませんでした。再読込後に続けてください。`);
       setPicker(null);
     } catch { if (!controller.signal.aborted) { setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); setPlan(null); } }
     finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
@@ -2497,8 +2518,17 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const releaseSetCompleted = (selected: readonly EditorPage[]) => {
     void (async () => {
       const current = sessionRef.current?.target, listed = await reloadPages();
-      if (current && selected.some((candidate) => sameTarget(candidate, current))) await load(current, { preserveView: true });
-      if (!listed) setNotice("公開結果は記録されましたが、ページ一覧を再読込できませんでした。");
+      const targetSiteId = selected[0]?.siteId;
+      const settingsSnapshot = targetSiteId
+        ? await refreshSitePublicationContext(targetSiteId, new AbortController().signal)
+        : undefined;
+      if (current && selected.some((candidate) => sameTarget(candidate, current))) await load(current, { preserveView: true, ...(settingsSnapshot ? { siteSettings: settingsSnapshot } : {}) });
+      const settingsRefreshed = !adapter.readSiteSettings || !!settingsSnapshot;
+      const problems = [
+        ...(!settingsRefreshed && targetSiteId === siteIdRef.current ? ["サイト設定の公開版を更新できませんでした。再読込後に続けてください。"] : []),
+        ...(!listed ? ["ページ一覧を再読込できませんでした。"] : [])
+      ];
+      if (problems.length) setNotice(`公開結果は記録されましたが、${problems.join(" ")}`);
     })();
   };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });

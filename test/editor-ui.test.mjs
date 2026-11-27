@@ -1031,6 +1031,25 @@ test("publishing and rollback require the allowed domain, authoritative diff and
   const invalid = await setup({ domain: "https://other.example" });
   try { await click("公開"); assert.equal(document.querySelector('[role="dialog"]'), null); assert.equal(invalid.calls.releases.length, 0); } finally { await invalid.cleanup(); }
 });
+test("a successful page publication refreshes the site epoch before the next plan", async () => {
+  let settings = { settings: { title: "デモサイト", description: "説明", locale: "ja" }, version: "draft-v1", publishedStylesVersion: "published-v1", sitePublicationEpoch: "epoch-1" };
+  const app = await setup({ adapter: {
+    readSiteSettings: async () => structuredClone(settings),
+    release: async () => {
+      settings = { ...settings, publishedStylesVersion: "published-v2", sitePublicationEpoch: "epoch-2" };
+      return { status: "released", snapshot: { document: { ...structuredClone(fixture), siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "released-v2" } };
+    }
+  } });
+  try {
+    await click("公開");
+    await act(async () => document.querySelector('[role="dialog"] input[type="checkbox"]').click());
+    await click("この内容を公開");
+    await settle();
+    await click("公開");
+    assert.deepEqual(app.calls.prepares.at(-1).siteStylesRevision, { stage: "published", version: "published-v2" });
+    assert.equal(app.calls.prepares.at(-1).sitePublicationEpoch, "epoch-2");
+  } finally { await app.cleanup(); }
+});
 test("dirty navigation requires explicit discard and can keep editing", async () => {
   const app = await setup();
   try {
@@ -1202,10 +1221,11 @@ test("multi-page release selects only pages with changes and can resume from the
   try { assert.equal(document.querySelector(".e-page-release-select"), null, "hosts without the optional methods do not show multi-page controls"); }
   finally { await absent.cleanup(); }
 
-  let plannedItems, preparedRequests = [], passedEpoch, applied = 0, statusReads = 0, operationId;
+  let plannedItems, preparedRequests = [], passedEpoch, applied = 0, statusReads = 0, siteSettingsReads = 0, publishedStylesVersion = "published-styles-v1", sitePublicationEpoch = "epoch-1", operationId;
+  const siteSettingsReadContexts = [];
   const app = await setup({ adapter: {
     listPages: async () => pages,
-    readSiteSettings: async () => ({ settings: { title: "デモサイト", description: "サイトの説明", locale: "ja" }, version: "draft-styles-v1", publishedStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-1" }),
+    readSiteSettings: async () => { siteSettingsReads++; siteSettingsReadContexts.push([publishedStylesVersion, sitePublicationEpoch]); return { settings: { title: "デモサイト", description: "サイトの説明", locale: "ja" }, version: "draft-styles-v1", publishedStylesVersion, sitePublicationEpoch }; },
     readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, draftStylesVersion: "draft-styles-v1", presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
     prepareRelease: async (request) => { preparedRequests.push(structuredClone(request)); return { ...request, confirmationToken: `single-${request.target.pageId}`, domain: "https://example.test",
       changes: request.target.pageId === "about" ? [] : [{ path: "title", before: "旧タイトル", after: request.target.pageId === "home" ? "ホーム更新" : "お問い合わせ更新" }] }; },
@@ -1216,11 +1236,13 @@ test("multi-page release selects only pages with changes and can resume from the
     },
     releaseSet: async (plan) => {
       applied++;
+      publishedStylesVersion = "published-styles-v2"; sitePublicationEpoch = "epoch-2";
       return { status: "publishing", operationId: plan.operationId, items: plan.items.map((item, index) => index === 0
         ? { target: item.target, status: "released", version: "released-home" } : { target: item.target, status: "pending" }) };
     },
     releaseSetStatus: async (id) => {
       statusReads++; assert.equal(id, operationId);
+      publishedStylesVersion = "published-styles-v3"; sitePublicationEpoch = "epoch-3";
       return { status: "completed", operationId: id, httpStatus: 200, result: { status: "completed", operationId: id,
         items: plannedItems.map((item, index) => ({ target: item.target, status: "released", version: `released-${index}` })) } };
     }
@@ -1246,7 +1268,10 @@ test("multi-page release selects only pages with changes and can resume from the
     assert.equal(applied, 1); assert.match(document.querySelector('[role="dialog"]').textContent, /ページは処理待ち/u);
     await click("状態を確認");
     assert.equal(statusReads, 1); assert.equal(document.querySelector('[role="dialog"]').textContent.includes("公開済み"), true);
+    await settle();
+    assert.deepEqual(siteSettingsReadContexts.at(-1), ["published-styles-v3", "epoch-3"]);
     await click("ページ一覧に戻る"); assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(siteSettingsReads >= 4, true, "each release result reloads the site publication snapshot");
   } finally { await app.cleanup(); }
 });
 

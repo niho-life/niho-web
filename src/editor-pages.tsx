@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode 
 import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
 import { Dialog } from "./editor-dialog.js";
 import { pageChangeProblems, sameTarget, validatePageChangePlan, type EditorOperation } from "./editor-model.js";
-import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorTarget } from "./editor-types.js";
+import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorSiteSettingsSnapshot, EditorTarget } from "./editor-types.js";
 import { resolvedAsset, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { coverAlt, socialImageProblem } from "./editor-assets.js";
 import { buildPageTree, findPathConflict, pageUrl, parseSiteSettings, resolvePageMetadata, validatePagePath, type PageMetadata, type PageTreeNode, type PageVisibility, type SiteSettings } from "./pages.js";
@@ -330,7 +330,7 @@ export type SiteSettingsState = {
   editStyles: (styles: SiteStyles) => string | undefined;
   form: SiteForm; dirty: boolean; problem: string | undefined; canSave: boolean; busy: boolean;
   message: { text: string; alert: boolean } | null; conflict: boolean;
-  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; acceptSnapshot: (snapshot: { settings: SiteSettings; version: string; publishedStylesVersion?: string; sitePublicationEpoch?: string }) => void; save: () => Promise<void>;
+  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; acceptSnapshot: (snapshot: EditorSiteSettingsSnapshot) => void; save: () => Promise<void>;
 };
 /** サイト設定は文書と別に、opaque な version の楽観ロックで保存する。 */
 export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: EditorBlockRegistry, components?: ComponentLibrary): SiteSettingsState {
@@ -405,11 +405,20 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     reset: () => { if (loaded) { setForm(formFrom(loaded.settings)); setStyles(parseSiteStyles(loaded.settings)); } setMessage(null); setConflict(false); },
     reload: () => setEpoch((value) => value + 1),
     acceptSnapshot: (snapshot) => {
-      if (dirty || typeof snapshot.version !== "string" || !snapshot.version) return;
+      if (typeof snapshot.version !== "string" || !snapshot.version) return;
       const settings = parseSiteSettings(snapshot.settings);
-      setLoaded({ siteId, settings, version: snapshot.version,
-        ...(snapshot.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: snapshot.publishedStylesVersion }),
-        ...(snapshot.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: snapshot.sitePublicationEpoch }) });
+      const publicationContext = typeof snapshot.publishedStylesVersion === "string" && typeof snapshot.sitePublicationEpoch === "string"
+        ? { publishedStylesVersion: snapshot.publishedStylesVersion, sitePublicationEpoch: snapshot.sitePublicationEpoch } : undefined;
+      if ((snapshot.publishedStylesVersion !== undefined || snapshot.sitePublicationEpoch !== undefined) !== (publicationContext !== undefined)
+        || publicationContext && (!publicationContext.publishedStylesVersion || publicationContext.publishedStylesVersion.length > 512
+          || !publicationContext.sitePublicationEpoch || publicationContext.sitePublicationEpoch.length > 512)) return;
+      if (dirty) {
+        if (publicationContext) setLoaded((current) => current?.siteId === siteId
+          ? { ...current, ...publicationContext }
+          : current);
+        return;
+      }
+      setLoaded({ siteId, settings, version: snapshot.version, ...publicationContext });
       setForm(formFrom(settings)); setStyles(parseSiteStyles(settings));
       setStatus("ready"); setLatest(undefined); setMessage(null); setConflict(false);
     },
