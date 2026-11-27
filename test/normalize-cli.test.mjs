@@ -52,7 +52,7 @@ async function sandbox(t, documents, settings = {}) {
   await writeFile(mock, `
     import assert from "node:assert/strict";
     import {readFileSync, writeFileSync} from "node:fs";
-    import { EDITING_OPERATIONS, SITE_STYLES_FEATURE, withSiteStylesFeature } from ${JSON.stringify(new URL("../dist/editing-api.js", import.meta.url).href)};
+    import { EDITING_OPERATIONS, SITE_STYLES_FEATURE } from ${JSON.stringify(new URL("../dist/editing-api.js", import.meta.url).href)};
     import { editDocumentById } from ${JSON.stringify(new URL("../dist/editor-model.js", import.meta.url).href)};
     import { decodeNormalizationOperations } from ${JSON.stringify(new URL("../dist/normalize.js", import.meta.url).href)};
     const location = ${JSON.stringify(statePath)};
@@ -74,10 +74,10 @@ async function sandbox(t, documents, settings = {}) {
       if (operation === "capabilities") {
         if (requestingStyles && !featured) return answer({ error: "not_found" }, 404);
         const operations = EDITING_OPERATIONS.filter(({ id }) => featured ? ["pages.apply", "site.styles.read"].includes(id) : id === "pages.apply");
-        return answer({ apiVersion: "v1", siteId: ${JSON.stringify(siteId)}, operations: featured ? operations.map(withSiteStylesFeature) : operations });
+        return answer({ apiVersion: "v1", siteId: ${JSON.stringify(siteId)}, operations });
       }
       const styleVersion = state.styleVersion ?? "styles-1";
-      if (operation === "site.styles.read") return answer({ sitePublicationEpoch: "epoch-1", draft: { version: styleVersion, styles: state.styles }, published: { stylesVersion: "public-1", styles: {} } });
+      if (operation === "site.styles.read") return answer({ draft: { version: styleVersion, styles: state.styles }, published: { version: "public-1", styles: {} } });
       if (operation === "site.breakpoints.read") return answer(state.breakpoints);
       if (operation === "site.breakpoints.save") {
         if (body.expectedVersion !== state.breakpoints.version) return answer({ error: "version_conflict" }, 409);
@@ -91,11 +91,11 @@ async function sandbox(t, documents, settings = {}) {
       }
       const snapshot = state.documents[path.at(-1)];
       assert.equal(target.searchParams.get("locale"), snapshot.document.locale);
-      assert.equal(featured, Boolean(state.styles));
-      if (operation === "pages.read") return answer({ ...snapshot, ...(featured ? { draftStylesVersion: styleVersion } : {}) });
+      assert.equal(requestingStyles, false);
+      if (operation === "pages.read") return answer(snapshot);
       const version = snapshot.version + "-next", revision = snapshot.document.revision + 1;
       if (operation === "pages.save") {
-        if (featured) assert.equal(body.draftStylesVersion, styleVersion);
+        assert.equal(body.draftStylesVersion, undefined);
         if (body.expectedVersion !== snapshot.version) return answer({ error: "version_conflict" }, 409);
         const document = { ...body.document, revision };
         state.documents[path.at(-1)] = { ...snapshot, version, document };
@@ -104,7 +104,7 @@ async function sandbox(t, documents, settings = {}) {
       }
       assert.equal(operation, "pages.apply");
       if (state.operations[body.operationId]) return answer(state.operations[body.operationId]);
-      if (body.baseVersion !== snapshot.version || featured && body.draftStylesVersion !== styleVersion) return answer({ error: "version_conflict" }, 409);
+      if (body.baseVersion !== snapshot.version) return answer({ error: "version_conflict" }, 409);
       const edited = decodeNormalizationOperations(body.operations).reduce((page, change) => editDocumentById(page, change, {}, [], undefined, state.styles), snapshot.document);
       const document = { ...edited, revision };
       const result = { status: "applied", version, revision, document };
@@ -190,7 +190,7 @@ test("normalize resumes the fixed operation ID after a lost response and verifie
   assert.deepEqual(requests.map(({ body }) => body.operationId), [
     checkpoint.pages[0].operationId, checkpoint.pages[0].operationId, checkpoint.pages[1].operationId
   ]);
-  assert.ok(requests.every(({ body }) => body.draftStylesVersion === "styles-1" && body.baseVersion === "page-1"));
+  assert.ok(requests.every(({ body }) => body.draftStylesVersion === undefined && body.baseVersion === "page-1"));
   assert.deepEqual(Object.values(state.documents).map(({ document }) => document.revision), [2, 2]);
   const verify = await run(["verify", "--json", server.checkpoint], server);
   assert.deepEqual(verify.output, { status: "equivalent", documentsChecked: 2 });

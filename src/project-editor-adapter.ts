@@ -65,17 +65,13 @@ function assertLibrarySite(library: unknown, site: EditorSite): void {
 }
 
 function releaseRequest(request: EditorReleaseRequest, target: EditorTarget): EditorReleaseRequest {
-  if ((request.siteStylesRevision === undefined) !== (request.sitePublicationEpoch === undefined)
-    || request.siteStylesRevision !== undefined && request.siteStylesRevision.stage !== "published") throw new Error("公開するサイト共通スタイルの版が正しくありません。");
   return {
     target,
     expectedVersion: request.expectedVersion,
     action: request.action,
     ...(request.revision === undefined ? {} : { revision: request.revision }),
     ...(request.componentsVersion === undefined ? {} : { componentsVersion: request.componentsVersion }),
-    ...(request.presentationVersion === undefined ? {} : { presentationVersion: request.presentationVersion }),
-    ...(request.siteStylesRevision === undefined ? {} : { siteStylesRevision: { stage: "published", version: releaseValue(request.siteStylesRevision.version, "サイト共通スタイルの公開版", 512) } }),
-    ...(request.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: releaseValue(request.sitePublicationEpoch, "サイト公開epoch", 512) })
+    ...(request.presentationVersion === undefined ? {} : { presentationVersion: request.presentationVersion })
   };
 }
 
@@ -173,8 +169,7 @@ function releaseSetItemsForProject(value: unknown, site: EditorSite): EditingPag
     seen.add(key);
     return { target, expectedVersion,
       ...(source.componentsVersion === undefined ? {} : { componentsVersion: releaseValue(source.componentsVersion, `items[${index}].componentsVersion`, 512) }),
-      ...(source.presentationVersion === undefined ? {} : { presentationVersion: releaseValue(source.presentationVersion, `items[${index}].presentationVersion`, 512) }),
-      ...(source.stylesVersion === undefined ? {} : { stylesVersion: releaseValue(source.stylesVersion, `items[${index}].stylesVersion`, 512) }) };
+      ...(source.presentationVersion === undefined ? {} : { presentationVersion: releaseValue(source.presentationVersion, `items[${index}].presentationVersion`, 512) }) };
   });
 }
 
@@ -182,25 +177,21 @@ function sameReleaseSetItems(left: readonly EditingPageReleaseSetItem[], right: 
   return left.length === right.length && left.every((item, index) => {
     const other = right[index];
     return !!other && item.target.siteId === other.target.siteId && item.target.pageId === other.target.pageId && item.target.locale === other.target.locale
-      && item.expectedVersion === other.expectedVersion && item.componentsVersion === other.componentsVersion && item.presentationVersion === other.presentationVersion
-      && item.stylesVersion === other.stylesVersion;
+      && item.expectedVersion === other.expectedVersion && item.componentsVersion === other.componentsVersion && item.presentationVersion === other.presentationVersion;
   });
 }
 
 function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPageReleaseSetItem[], site: EditorSite): EditingPageReleaseSetPlan {
   const source = record(value, "releaseSetPlan"), operationId = releaseValue(source.operationId, "operationId", 80);
-  const sitePublicationEpoch = source.sitePublicationEpoch === undefined ? undefined : releaseValue(source.sitePublicationEpoch, "sitePublicationEpoch", 512);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)
     || source.siteId !== site.id || typeof source.confirmationToken !== "string" || !source.confirmationToken || source.confirmationToken.length > 512
-    || typeof source.domain !== "string" || !site.domains.includes(source.domain)
-    || expectedItems.some((item) => item.stylesVersion !== undefined) && sitePublicationEpoch === undefined) throw new Error("公開変更セットの確認情報が正しくありません。");
+    || typeof source.domain !== "string" || !site.domains.includes(source.domain)) throw new Error("公開変更セットの確認情報が正しくありません。");
   let domain: URL;
   try { domain = new URL(source.domain); } catch { throw new Error("公開変更セットの公開先が正しくありません。"); }
   if (domain.protocol !== "https:" || domain.origin !== source.domain || domain.username || domain.password || domain.search || domain.hash) throw new Error("公開変更セットの公開先が正しくありません。");
   const items = releaseSetItemsForProject(source.items, site);
   if (!sameReleaseSetItems(items, expectedItems)) throw new Error("公開変更セットの対象または版が一致しません。");
-  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain,
-    ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }), items };
+  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain, items };
 }
 
 function checkedReleaseSetResult(value: unknown, site: EditorSite, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): EditingPageReleaseSetApplyResult {
@@ -377,10 +368,7 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
     async prepareRelease(request, signal) {
       const checked = releaseRequest(request, targetForProject(request.target, site));
       const plan = await adapter.prepareRelease(checked, signal);
-      const planRequest: EditorReleaseRequest = { ...checked,
-        ...(checked.siteStylesRevision === undefined && plan.siteStylesRevision !== undefined ? { siteStylesRevision: plan.siteStylesRevision } : {}),
-        ...(checked.sitePublicationEpoch === undefined && plan.sitePublicationEpoch !== undefined ? { sitePublicationEpoch: plan.sitePublicationEpoch } : {}) };
-      return checkedPlan(plan, planRequest, site);
+      return checkedPlan(plan, checked, site);
     },
     async release(request, signal) {
       const target = targetForProject(request.target, site);
@@ -434,7 +422,6 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         return { status: "applied", page: pageEntry(result.page) };
       }
     } satisfies Pick<EditorAdapter, "applyPageChange"> : {}),
-    ...(adapter.siteStyleCapabilities ? { siteStyleCapabilities: adapter.siteStyleCapabilities } : {}),
     ...(adapter.siteSettingsMetadataEditable === undefined ? {} : { siteSettingsMetadataEditable: adapter.siteSettingsMetadataEditable }),
     ...(adapter.breakpointSettings ? { breakpointSettings: {
       async read(siteId, signal) {
@@ -456,16 +443,27 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       async readSiteSettings(siteId, signal) {
         if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
         const snapshot = await adapter.readSiteSettings!(site.id, signal);
-        return { settings: structuredClone(snapshot.settings), version: snapshot.version };
+        return { settings: structuredClone(snapshot.settings), version: snapshot.version,
+          ...(snapshot.publishedVersion === undefined ? {} : { publishedVersion: snapshot.publishedVersion }),
+          ...(snapshot.publishedStyles === undefined ? {} : { publishedStyles: structuredClone(snapshot.publishedStyles) }) };
       }
     } satisfies Pick<EditorAdapter, "readSiteSettings"> : {}),
     ...(adapter.saveSiteSettings ? {
       async saveSiteSettings(request, signal) {
         if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトは変更できません。");
         if (request.previousStyles !== undefined) keys(record(request.previousStyles, "$.previousStyles"), ["tokens", "textStyles"], "$.previousStyles");
-        return adapter.saveSiteSettings!({ siteId: site.id, settings: parseSiteSettings(request.settings), expectedVersion: request.expectedVersion, ...(request.previousStyles === undefined ? {} : { previousStyles: parseSiteStyles(request.previousStyles) }) }, signal);
+        return adapter.saveSiteSettings!({ siteId: site.id, settings: parseSiteSettings(request.settings), expectedVersion: request.expectedVersion,
+          ...(request.previousStyles === undefined ? {} : { previousStyles: parseSiteStyles(request.previousStyles) }),
+          ...(request.styleRenames === undefined ? {} : { styleRenames: structuredClone(request.styleRenames) }) }, signal);
       }
     } satisfies Pick<EditorAdapter, "saveSiteSettings"> : {}),
+    ...(adapter.publishSiteStyles ? {
+      async publishSiteStyles(request, signal) {
+        if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトは公開できません。");
+        return adapter.publishSiteStyles!({ siteId: site.id, expectedDraftVersion: request.expectedDraftVersion,
+          expectedPublishedVersion: request.expectedPublishedVersion }, signal);
+      }
+    } satisfies Pick<EditorAdapter, "publishSiteStyles"> : {}),
     ...(adapter.listRevisions ? {
       async listRevisions(request, signal) {
         const target = targetForProject(request.target, site);

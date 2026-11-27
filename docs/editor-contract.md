@@ -26,7 +26,7 @@ save は expectedVersion を使って原子的に比較します。古い版の�
 
 ## サイトスタイル
 
-サイト共通 style の所有権、version、ページ上書き、削除時の参照切り離しは[サイト共通スタイル契約](site-styles-contract.md)を正とします。EditorAdapter は host が提供する capability の範囲で画面へ接続し、ページや component のデータへサイト設定を複製しません。`site.styles` 対応hostは `EditorSnapshot` の `publishedSiteStylesVersion` と `sitePublicationEpoch` を同じ `site.styles.read` snapshot から返します。公開・rollbackの確認では両方を `prepareRelease` へ渡し、planが同じ値を保持することを検証します。ページ操作用の `stylesVersion` / `draftStylesVersion` と混同しません。
+サイト共通 style の所有権、version、ページ上書き、削除時の参照切り離しは[サイト共通スタイル契約](site-styles-contract.md)を正とします。EditorAdapter は host が提供する capability の範囲で画面へ接続し、ページや component のデータへサイト設定を複製しません。
 
 ## 表示と信頼済みコード
 

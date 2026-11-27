@@ -175,15 +175,9 @@ Next.js では `metadata` の各項目へ対応付けます。Astro では `rend
 
 全体の正は [サイト共通スタイルの契約](site-styles-contract.md) です。`SiteSettings` は描画・公開メタデータ用の集約値で `tokens` / `textStyles` を持てますが、共通スタイルの版管理と更新は `site.styles.*` が所有します。既存 `EditorAdapter.readSiteSettings` / `saveSiteSettings` をGUI向けfacadeとして保つhostは、style部分の処理を共通APIへ委譲します。公開情報だけを保存するときも既存スタイル定義を保持します。
 
-`site.styles.read` は `sitePublicationEpoch` と、versioned draft `{ version, styles }`、公開 `{ stylesVersion, styles }` を一つのsnapshotで返します。`site.styles.save` は `expectedVersion` と新しい `SiteStyles` をCAS保存します。通常保存は追加・値更新だけで、token / text style定義の削除とrenameは `style_migration_required`（422）です。新しいdraftは、全draft page、template、shared document、component/slot等、共通定義を参照する保存対象で再検証します。
+`site.styles.read` はversion付きのdraftとpublishedを返します。`site.styles.edit` はdraftへset/delete/rename差分をCAS適用し、renameは全参照を同じtransactionで更新します。参照中のdeleteは利用箇所を返して拒否します。`site.styles.publish` はサイトのpublished pointerを切り替え、公開中の全ページへ一律に反映します。
 
-`pages.read` / `pages.save` / `pages.apply` はdraft style版で検証します。ホストはstyle版をページrevisionと一緒に保存し、既存のopaque `version` CAS tokenで文書版とstyle版を照合します。`pages.release-plan` / `pages.release*` は公開 `stylesVersion` を使います。公開版にないdraft-only参照を含むページは、共通スタイルを先に公開するまでreleaseできません。`PageDocument` のschemaは変更せず、旧clientのwire shapeも維持します。
-
-`site.styles.release-plan` はdraft版と現在の公開版の両方を照合し、全公開ページ・全locale・依存版とbefore/afterを固定します。`site.styles.release` はconfirmation tokenを再照合して、新しい共通style版と全公開locale snapshotを一度の原子的切替で有効にします。HTML/CSS cache keyはページrevisionと公開 `stylesVersion` を含みます。公開履歴は不変です。
-
-削除・renameは `site.styles.migration-plan` / `site.styles.migration-apply` に限ります。純粋関数 `detachRemovedSiteStyles(page, previousStyles, nextStyles)`（`@niho/web/core`）はページ1件での切り離し補助に残りますが、ホストの全参照列挙・fence・transactionを代行しません。migration planはdraft/publicの両版、すべての対象文書と版、変更後の実効値を固定します。apply時だけhostがpage save/release、翻訳materialize/release、共有文書・部品更新を止めるfenceを取り、変換後の文書・両style snapshot・locale release pointer・操作記録を一つのCAS境界で確定します。途中状態を公開せず、stale planや失敗時は全体を反映しません。全対象を列挙・検証できないhostはmigrationを拒否します。
-
-翻訳の原文・訳文はdraft materialize / save検証で同じ `{ siteStyles, siteStylesRevision: { stage: "draft", version } }` を使います。公開snapshot生成には `stage: "published"` のrevisionを渡し、locale release recordには使った公開 `stylesVersion` を保存します。実効値を含むlocale snapshotと公開pointerはstyle release時に全localeで更新します。PageDocumentとsnapshot JSONにはstyle版を追加せず、hostがrevision/release recordのmetadataで保持します。詳しくは[サイト共通スタイル契約](site-styles-contract.md)を参照してください。
+`pages.read` / `pages.save` / `pages.apply` / `pages.release*` はstyle版やpublication epochをrequest/responseへ持ちません。編集時は現在のdraft、公開描画時は現在のpublishedをホストが信頼済みcontextとして渡します。`PageDocument` のschemaは変更しません。詳しくは[サイト共通スタイル契約](site-styles-contract.md)を参照してください。
 
 ## 鎌倉Studioの接続範囲
 

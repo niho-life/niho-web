@@ -4,15 +4,16 @@ import { parsePageDocument } from "./document.js";
 import { parseSiteSettings } from "./pages.js";
 import { fingerprint, parseEditorReadOnly, sameTarget, type EditorHistory } from "./editor-model.js";
 import type { ComponentLibrary } from "./types.js";
-import type { EditorAdapter, EditorBlockRegistry, EditorLock, EditorReadOnly, EditorSnapshot, EditorTarget } from "./editor-types.js";
+import type { EditorAdapter, EditorBlockRegistry, EditorLock, EditorReadOnly, EditorSiteSettingsSnapshot, EditorSnapshot, EditorTarget } from "./editor-types.js";
 import type { SiteStyles } from "./site-styles.js";
 import { parseSitePresentation } from "./presentation.js";
 import type { SitePresentation } from "./types.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 
-export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; publishedSiteStylesVersion?: string; sitePublicationEpoch?: string; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
-export type EditorSessionLoad = { session: EditorSession; siteSettings?: { settings: ReturnType<typeof parseSiteSettings>; version: string }; warning?: string };
+export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
+export type EditorSessionSiteSettings = Omit<EditorSiteSettingsSnapshot, "settings"> & { readonly settings: ReturnType<typeof parseSiteSettings> };
+export type EditorSessionLoad = { session: EditorSession; siteSettings?: EditorSessionSiteSettings; warning?: string };
 
 export class EditorSessionLoadError extends Error {
   constructor(readonly reason: "document" | "site-settings-required", message: string, options?: ErrorOptions) { super(message, options); this.name = "EditorSessionLoadError"; }
@@ -28,15 +29,11 @@ export function editorSessionFrom(snapshot: EditorSnapshot, target: EditorTarget
     if (typeof value !== "string" || !value || value.length > 200) throw new Error("依存先の版が正しくありません。");
     return [[key, value]];
   }));
-  const publishedSiteStylesVersion = snapshot.publishedSiteStylesVersion;
-  if (publishedSiteStylesVersion !== undefined && (typeof publishedSiteStylesVersion !== "string" || !publishedSiteStylesVersion || publishedSiteStylesVersion.length > 512 || /[\u0000-\u001f\u007f]/u.test(publishedSiteStylesVersion))) throw new Error("サイト共通スタイルの公開版が正しくありません。");
-  const sitePublicationEpoch = snapshot.sitePublicationEpoch;
-  if (sitePublicationEpoch !== undefined && (typeof sitePublicationEpoch !== "string" || !sitePublicationEpoch || sitePublicationEpoch.length > 512 || /[\u0000-\u001f\u007f]/u.test(sitePublicationEpoch))) throw new Error("サイト公開epochが正しくありません。");
   const readOnly = parseEditorReadOnly(snapshot.readOnly);
   const presentation = snapshot.presentation === undefined ? undefined : parseSitePresentation(snapshot.presentation, document, blocks);
   const englishPublication = snapshot.englishPublication === undefined ? undefined : parseEnglishPublication(snapshot.englishPublication);
   const cmsBindings = snapshot.cmsBindings == null ? snapshot.cmsBindings : parseCmsPageBindings(snapshot.cmsBindings, target);
-  return { ...(siteStyles ? { siteStyles } : {}), ...(publishedSiteStylesVersion === undefined ? {} : { publishedSiteStylesVersion }), ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, dependencyVersions, operationQueue: operationQueue(document), saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
+  return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, dependencyVersions, operationQueue: operationQueue(document), saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
     ...(cmsBindings === undefined ? {} : { cmsBindings, savedCmsBindings: JSON.stringify(cmsBindings) }),
     ...(snapshot.hasSavedDraft === undefined ? {} : { hasSavedDraft: snapshot.hasSavedDraft }), ...(readOnly ? { readOnly } : {}) };
 }
@@ -53,10 +50,10 @@ function sessionCacheKey(target: EditorTarget, snapshot: EditorSnapshot, setting
   try {
     return JSON.stringify([
       target.siteId, target.pageId, target.locale, snapshot.version, componentsKey,
-      snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null, snapshot.stylesVersion ?? null,
+      snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null,
       settingsVersion === undefined ? "unavailable" : settingsVersion === null ? "failed" : settingsVersion,
       snapshot.hasSavedDraft ?? null, snapshot.locks ?? null, snapshot.releases ?? null,
-      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null, snapshot.publishedSiteStylesVersion ?? null, snapshot.sitePublicationEpoch ?? null, snapshot.cmsBindings !== undefined
+      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null, snapshot.cmsBindings !== undefined
     ]);
   } catch { return undefined; }
 }
@@ -143,18 +140,22 @@ export class EditorSessionCache {
   clear(): void { this.entries.clear(); this.latest.clear(); }
 }
 
-export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: { readonly settings: ReturnType<typeof parseSiteSettings>; readonly version: string } };
+export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: EditorSessionSiteSettings };
 
 /** 文書と任意のサイト設定を独立取得し、設定が無くても単体検証できる文書だけ編集開始する。 */
 export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocument" | "readSiteSettings">, target: EditorTarget, signal: AbortSignal, blocks: EditorBlockRegistry = {}, components?: ComponentLibrary, options: EditorSessionReadOptions = {}): Promise<EditorSessionLoad> {
   const settingsRead = options.siteSettings
     ? Promise.resolve().then(() => {
       if (typeof options.siteSettings!.version !== "string" || !options.siteSettings!.version) throw new Error("site settings version is required");
-      return { settings: parseSiteSettings(options.siteSettings!.settings), version: options.siteSettings!.version };
+      return { settings: parseSiteSettings(options.siteSettings!.settings), version: options.siteSettings!.version,
+        ...(options.siteSettings!.publishedVersion === undefined ? {} : { publishedVersion: options.siteSettings!.publishedVersion }),
+        ...(options.siteSettings!.publishedStyles === undefined ? {} : { publishedStyles: options.siteSettings!.publishedStyles }) };
     })
     : adapter.readSiteSettings ? adapter.readSiteSettings(target.siteId, signal).then((snapshot) => {
       if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("site settings version is required");
-      return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version };
+      return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version,
+        ...(snapshot.publishedVersion === undefined ? {} : { publishedVersion: snapshot.publishedVersion }),
+        ...(snapshot.publishedStyles === undefined ? {} : { publishedStyles: snapshot.publishedStyles }) };
     }) : Promise.resolve(undefined);
   // Start feature discovery from the site-settings read before the page request chooses its wire shape.
   const documentRead = options.snapshot ? Promise.resolve(options.snapshot) : adapter.readDocument(target, signal);
@@ -163,20 +164,6 @@ export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocume
   if (documentResult.status === "rejected") throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: documentResult.reason });
   let pageSnapshot = documentResult.value;
   let siteSettings = settingsResult.status === "fulfilled" ? settingsResult.value : undefined;
-  const pageStylesVersion = (snapshot: EditorSnapshot) => snapshot.draftStylesVersion ?? snapshot.stylesVersion;
-  if (siteSettings && pageStylesVersion(pageSnapshot) !== undefined && siteSettings.version !== pageStylesVersion(pageSnapshot)) {
-    try {
-      if (!adapter.readSiteSettings) throw new Error("site settings cannot be refreshed");
-      const refreshed = await adapter.readSiteSettings(target.siteId, signal);
-      if (!refreshed || typeof refreshed.version !== "string" || !refreshed.version) throw new Error("site settings version is required");
-      siteSettings = { settings: parseSiteSettings(refreshed.settings), version: refreshed.version };
-      if (siteSettings.version !== pageStylesVersion(pageSnapshot)) pageSnapshot = await adapter.readDocument(target, signal);
-      if (siteSettings.version !== pageStylesVersion(pageSnapshot)) throw new Error("page and site settings versions do not match");
-    } catch (error) {
-      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      throw new EditorSessionLoadError("site-settings-required", "ページとサイト共通スタイルの版が一致しません。再読込してください。", { cause: error });
-    }
-  }
   if (settingsResult.status === "fulfilled") {
     const cached = options.cache?.get(target, pageSnapshot, siteSettings?.version, components);
     if (cached) return cached;

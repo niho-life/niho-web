@@ -73,56 +73,49 @@ test("editor session reuses the current site-settings snapshot without a network
   assert.equal(result.warning, undefined);
 });
 
-test("editor session refreshes site settings when the page reports a newer draft-style version", async () => {
+test("editor session uses the supplied site draft without a page style-version fence", async () => {
   const dependent = structuredClone(source);
   dependent.body[0].style = { base: { color: { token: "siteInk" } } };
   let settingsReads = 0;
   const result = await readEditorSession({
-    readDocument: async () => ({ ...snapshot(dependent), draftStylesVersion: "draft-2" }),
-    readSiteSettings: async () => {
-      settingsReads++;
-      return { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-2" };
-    }
+    readDocument: async () => snapshot(dependent),
+    readSiteSettings: async () => { settingsReads++; throw new Error("should use supplied snapshot"); }
   }, target, new AbortController().signal, {}, undefined, {
-    siteSettings: { settings: { title: "Demo", locale: "ja" }, version: "draft-1" }
+    siteSettings: { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-1" }
   });
-  assert.equal(settingsReads, 1);
+  assert.equal(settingsReads, 0);
   assert.equal(result.session.siteStyles.tokens.siteInk.value, "#123456");
   assert.equal(result.session.selfContained, false);
 });
 
-test("editor session replaces a prefetched page when its style dependency is stale", async () => {
+test("editor session reuses a prefetched page without a page style dependency", async () => {
   const dependent = structuredClone(source);
   dependent.body[0].style = { base: { color: { token: "siteInk" } } };
-  const latest = { ...dependent, title: "最新のページ" };
   let pageReads = 0;
   const result = await readEditorSession({
-    readDocument: async () => { pageReads++; return { ...snapshot(latest), draftStylesVersion: "draft-2" }; },
+    readDocument: async () => { pageReads++; throw new Error("should use prefetched page"); },
     readSiteSettings: async () => ({ settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-2" })
   }, target, new AbortController().signal, {}, undefined, {
-    snapshot: { ...snapshot(dependent), draftStylesVersion: "draft-1" },
+    snapshot: snapshot(dependent),
     siteSettings: { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-2" }
   });
-  assert.equal(pageReads, 1);
-  assert.equal(result.session.history.present.title, "最新のページ");
+  assert.equal(pageReads, 0);
+  assert.equal(result.session.history.present.title, dependent.title);
 });
 
-test("editor session refreshes cached site settings when a page reports a newer styles version", async () => {
+test("editor session has no styles version in page dependency metadata", async () => {
   const dependent = structuredClone(source);
   dependent.body[0].style = { base: { color: { token: "siteInk" } } };
   let settingsReads = 0;
   const result = await readEditorSession({
-    readDocument: async () => ({ ...snapshot(dependent), stylesVersion: "s2" }),
-    readSiteSettings: async () => {
-      settingsReads++;
-      return { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "s2" };
-    }
+    readDocument: async () => snapshot(dependent),
+    readSiteSettings: async () => { settingsReads++; throw new Error("should use supplied snapshot"); }
   }, target, new AbortController().signal, {}, undefined, {
-    siteSettings: { settings: { title: "Demo", locale: "ja" }, version: "s1" }
+    siteSettings: { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "s1" }
   });
-  assert.equal(settingsReads, 1);
+  assert.equal(settingsReads, 0);
   assert.equal(result.session.siteStyles.tokens.siteInk.value, "#123456");
-  assert.equal(result.session.dependencyVersions.stylesVersion, "s2");
+  assert.equal(result.session.dependencyVersions.stylesVersion, undefined);
 });
 
 test("editor page cache reuses only the saved session for the same document version", async () => {
@@ -144,15 +137,6 @@ test("editor page cache reuses only the saved session for the same document vers
   const changedVersion = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
   assert.notStrictEqual(changedVersion.session.history.present, savedDocument);
   assert.equal(changedVersion.session.history.present.title, "サーバー側の新しい版");
-});
-
-test("editor page cache invalidates the parsed session when the published site-style fence changes", async () => {
-  const cache = new EditorSessionCache(2), controller = new AbortController();
-  const adapter = { readDocument: async () => ({ ...snapshot(), publishedSiteStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-v1" }) };
-  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
-  const changed = await readEditorSession({ readDocument: async () => ({ ...snapshot(), publishedSiteStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-v2" }) }, target, controller.signal, {}, undefined, { cache });
-  assert.notStrictEqual(changed.session.history.present, first.session.history.present);
-  assert.equal(changed.session.sitePublicationEpoch, "epoch-v2");
 });
 
 test("editor page cache keeps a clean last-known session and keys it by component-library identity", async () => {

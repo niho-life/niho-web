@@ -4,16 +4,12 @@ import { parseTextStyles, parseTokens } from "./style-values.js";
 /** サイト設定のスタイル部分。ページ JSON へ継承値を書き戻さない。 */
 export type SiteStyles = { tokens?: Record<string, DesignToken>; textStyles?: Record<string, TextStyle> };
 
-/** A style version is meaningless without the stage whose immutable snapshot it identifies. */
-export type SiteStylesRevision =
-  | { readonly stage: "draft"; readonly version: string }
-  | { readonly stage: "published"; readonly version: string };
+/** Identifies the draft snapshot consumed by the one-time normalizer; pages do not persist it. */
+export type SiteStylesRevision = { readonly stage: "draft"; readonly version: string };
 
 export type SiteStylesSnapshot = {
-  /** Site-wide generation that changes whenever a public pointer is committed. */
-  readonly sitePublicationEpoch: string;
   readonly draft: { readonly version: string; readonly styles: SiteStyles };
-  readonly published: { readonly stylesVersion: string; readonly styles: SiteStyles };
+  readonly published: { readonly version: string; readonly styles: SiteStyles };
 };
 
 /** サイト単体で解決できる参照だけを受け付ける。ページの値による補完は禁止。 */
@@ -80,7 +76,7 @@ export function retainPageStyles(document: PageDocument, original: PageDocument,
   return result;
 }
 
-/** サイトで削除する定義をページ所有へ切り離す。全 draft / 公開参照の原子的保存はホストが行う。 */
+/** 削除候補の見た目を比較するためページ所有へ切り離す。使用中定義の実削除はhostが拒否する。 */
 export function detachRemovedSiteStyles(document: PageDocument, before: SiteStyles, after: SiteStyles): PageDocument {
   const old = parseSiteStyles(before), next = parseSiteStyles(after);
   const removedSiteTokens = new Set(Object.keys(old.tokens ?? {}).filter((name) => !Object.hasOwn(next.tokens ?? {}, name)));

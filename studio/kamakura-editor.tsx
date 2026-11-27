@@ -261,17 +261,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1`, editorSnapshot: { blocks: catalog.blockContracts } });
   const site = catalog.sites.find(({ id }) => id === KAMAKURA_EDITOR_SITE_ID);
   if (!site) throw new Error("鎌倉サイトの設定がありません。");
-  let sitePublicationEpoch: string | undefined;
-  let publishedStylesVersion: string | undefined;
-  const siteSettings = createEditingApiSiteSettingsFacade({
-    async readSiteStyles(signal) {
-      const snapshot = await editingApi.readSiteStyles(signal);
-      sitePublicationEpoch = snapshot.sitePublicationEpoch;
-      publishedStylesVersion = snapshot.published.stylesVersion;
-      return snapshot;
-    },
-    saveSiteStyles: (expectedVersion, styles, signal) => editingApi.saveSiteStyles(expectedVersion, styles, signal)
-  }, KAMAKURA_EDITOR_SITE_ID, { title: site.name, locale: "ja" });
+  const siteSettings = createEditingApiSiteSettingsFacade(editingApi, KAMAKURA_EDITOR_SITE_ID, { title: site.name, locale: "ja" });
   const siteSettingsReads = new Map<string, Promise<Awaited<ReturnType<NonNullable<typeof siteSettings.readSiteSettings>>>>>();
   const readSiteSettings = (siteId: string, signal: AbortSignal) => {
     signal.throwIfAborted();
@@ -323,16 +313,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     const wire = await editingApi.read(checked, signal);
     if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
     if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-    const pendingSiteSettings = siteSettingsReads.get(KAMAKURA_EDITOR_SITE_ID);
-    if (pendingSiteSettings) {
-      await pendingSiteSettings.catch(() => undefined);
-      signal.throwIfAborted();
-    }
     return { ...wire.editorState, document: wire.document, version: wire.version,
-      ...(wire.stylesVersion === undefined ? {} : { stylesVersion: wire.stylesVersion }),
-      ...(wire.draftStylesVersion === undefined ? {} : { draftStylesVersion: wire.draftStylesVersion }),
-      ...(publishedStylesVersion === undefined ? {} : { publishedSiteStylesVersion: publishedStylesVersion }),
-      ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }),
       ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readEnglishDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
@@ -416,8 +397,6 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
         operations: input.operations,
         ...(input.componentsVersion === undefined ? {} : { componentsVersion: input.componentsVersion }),
         ...(input.presentationVersion === undefined ? {} : { presentationVersion: input.presentationVersion }),
-        ...(input.stylesVersion === undefined ? {} : { stylesVersion: input.stylesVersion }),
-        ...(input.draftStylesVersion === undefined ? {} : { draftStylesVersion: input.draftStylesVersion }),
         ...(input.cmsBindings === undefined ? {} : { cmsBindings: input.cmsBindings })
       }, signal);
       if (result.status === "valid") throw new Error("dry-run result cannot be used to save a page.");
@@ -441,14 +420,11 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return parseSaved({ status: "saved", version: result.version, revision: result.document.revision });
     })),
     prepareRelease: (input, signal) => request(signal, async () => {
-      const target = validTarget(input.target);
+      validTarget(input.target);
       if (!validVersion(input.expectedVersion) || !validVersion(input.presentationVersion) || (input.action === "publish" ? input.revision !== undefined : input.action !== "rollback" || !Number.isSafeInteger(input.revision) || input.revision! <= 0)) throw new Error("公開操作と版の指定が一致しません。");
-      const request: EditorReleaseRequest = { ...input, target,
-        ...(input.siteStylesRevision === undefined && publishedStylesVersion ? { siteStylesRevision: { stage: "published", version: publishedStylesVersion } } : {}),
-        ...(input.sitePublicationEpoch === undefined && sitePublicationEpoch ? { sitePublicationEpoch } : {}) };
-      const { target: _target, ...releaseInput } = request;
-      const plan = await editingApi.prepareRelease(target, releaseInput, signal);
-      const parsed = parsePlan(plan, request, catalog.sites[0]!.domains[0]!);
+      const plan = await editingApi.prepareRelease(input.target, { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion,
+        action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {}) }, signal);
+      const parsed = parsePlan(plan, input, catalog.sites[0]!.domains[0]!);
       releaseOperationIds.set(parsed.confirmationToken, crypto.randomUUID());
       return parsed;
     }),
@@ -469,11 +445,10 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
         const target = validTarget(item.target), key = `${target.siteId}:${target.pageId}:${target.locale}`;
         if (seen.has(key) || !validVersion(item.expectedVersion)
           || item.componentsVersion !== undefined && !validVersion(item.componentsVersion)
-          || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)
-          || item.stylesVersion !== undefined && !validVersion(item.stylesVersion)) throw new Error("公開変更セットの対象または版が正しくありません。");
+          || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)) throw new Error("公開変更セットの対象または版が正しくありません。");
         seen.add(key);
       }
-      return editingApi.preparePageReleaseSet(items, signal, undefined, sitePublicationEpoch);
+      return editingApi.preparePageReleaseSet(items, signal);
     }),
     releaseSet: (plan, signal) => conflict(() => request(signal, async () => editingApi.publishPageReleaseSet(plan, signal))),
     releaseSetStatus: (operationId, signal) => request(signal, async () => {

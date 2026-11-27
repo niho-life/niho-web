@@ -1,4 +1,4 @@
-import type { SiteStyles, SiteStylesRevision } from "./site-styles.js";
+import type { SiteStyles } from "./site-styles.js";
 import type { BuilderDefinition } from "./builder.js";
 import type { ComponentType, ReactNode } from "react";
 import type { AssetLibraryAdapter, ResolvedAssetMap } from "./assets.js";
@@ -15,6 +15,7 @@ import type { EnglishPublication, EnglishPublicationRetryResult } from "./englis
 import type { BlankEmbedRegistry } from "./embeds.js";
 import type { CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import type { CmsSchema } from "./cms-v2-schema.js";
+import type { EditingSiteStylesRename, EditingSiteStylesUsage } from "./editing-site-styles.js";
 export type { EnglishPublication, EnglishPublicationRetryResult, EnglishPublicationState } from "./english-publication.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 /** 言語全体の公開の型は locale-release-contract.ts に移した。互換のためここからも export する。 */
@@ -94,12 +95,6 @@ export type EditorLock = { nodeId: string; fields: readonly string[]; reason: st
 export type EditorReadOnly = { reason: string; editUrl?: string; editLabel?: string };
 export type EditorSnapshot = PageOperationVersions & {
   document: unknown;
-  /** Optional site-style dependency version reported by feature-aware page reads. */
-  draftStylesVersion?: string;
-  /** Published site-style version negotiated through site.styles. */
-  publishedSiteStylesVersion?: string;
-  /** Opaque publication epoch paired with the published site-style dependency. */
-  sitePublicationEpoch?: string;
   /** Omitted when the host has no CMS page binding capability. */
   cmsBindings?: CmsPageBindingsDocument | null;
   /** ホストが発行する opaque な楽観ロック値。 */
@@ -130,9 +125,6 @@ export type EditorReleaseRequest = {
   componentsVersion?: string;
   /** presentation がある snapshot では必須。ホストは共有文書等の依存版も CAS する。 */
   presentationVersion?: string;
-  /** Feature-aware hosts bind publication to the immutable published style snapshot. */
-  siteStylesRevision?: Extract<SiteStylesRevision, { stage: "published" }>;
-  sitePublicationEpoch?: string;
 };
 /** 公開確認に添える影響範囲。kind は共通部品・ページ・サイト設定。 */
 export type EditorReleaseAffected = { kind: "shared" | "page" | "site"; name: string; detail?: string };
@@ -187,8 +179,10 @@ export type EditorPageImpact = {
 };
 export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken: string; domain: string; impact: EditorPageImpact; expectedVersion?: string; operationId?: string };
 export type EditorPageChangeResult = { status: "applied"; page: EditorPage; operationId?: string } | { status: "conflict" };
-export type EditorSiteSettingsSnapshot = { settings: unknown; version: string };
-export type EditorSiteSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
+export type EditorSiteSettingsSnapshot = { settings: unknown; version: string; publishedVersion?: string; publishedStyles?: SiteStyles };
+export type EditorSiteSettingsSaveResult = { status: "saved"; version: string; styles?: SiteStyles } | { status: "conflict" }
+  | { status: "referenced"; usages: readonly EditingSiteStylesUsage[] };
+export type EditorSiteStylesPublishResult = { status: "published"; version: string; styles: SiteStyles } | { status: "conflict" };
 export type EditorBreakpointName = "Mini" | "Mobile" | "Tablet" | "Small" | "PC";
 export type EditorBreakpointSettings = {
   /** mobile-first の最も狭い有効段。PC だけが有効な場合は PC。 */
@@ -249,16 +243,18 @@ export interface EditorAdapter {
   /** ページ操作の影響と確認 token。両方を実装した場合だけページ操作を表示する。 */
   preparePageChange?(change: EditorPageChange, signal: AbortSignal): Promise<EditorPageChangePlan>;
   applyPageChange?(plan: EditorPageChangePlan, signal: AbortSignal): Promise<EditorPageChangeResult>;
-  /** 全ページの draft / 公開参照を同一トランザクションで切り離せるホストだけ true。 */
-  siteStyleCapabilities?: { atomicReferenceDetachment: true };
   /** サイト共通の設定。version は楽観ロック用の opaque な値。 */
   readSiteSettings?(siteId: string, signal: AbortSignal): Promise<EditorSiteSettingsSnapshot>;
   /** false の場合、共通スタイルは編集できるがホスト所有のサイト公開メタデータは読み取り専用。 */
   siteSettingsMetadataEditable?: boolean;
   saveSiteSettings?(request: { siteId: string; settings: SiteSettings; expectedVersion: string;
-    /** スタイル変更時の保存済み基準。削除参照を全ページで切り離し、設定と原子的に保存する。 */
+    /** スタイル変更時の保存済み基準。共通の edit 操作へ差分化する。 */
     previousStyles?: SiteStyles;
+    /** 定義の名前変更は、参照を書き換える同一 edit 操作の一部として送る。 */
+    styleRenames?: readonly EditingSiteStylesRename[];
   }, signal: AbortSignal): Promise<EditorSiteSettingsSaveResult>;
+  /** 保存済みのサイト共通スタイルを、全ページ共通の公開 pointer へ切り替える。 */
+  publishSiteStyles?(request: { siteId: string; expectedDraftVersion: string; expectedPublishedVersion: string }, signal: AbortSignal): Promise<EditorSiteStylesPublishResult>;
   /** サイト単位の表示幅の段。PC は必須、ほかの段は任意で、base は最も狭い有効段。省略したホストでは PageEditorProps の値を読み取り専用で表示する。 */
   breakpointSettings?: {
     read(siteId: string, signal: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;

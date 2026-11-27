@@ -9,7 +9,7 @@ const document = JSON.parse(readFileSync(new URL("../examples/page.json", import
 const { siteId, pageId, locale } = document, target = { siteId, pageId, locale };
 const origin = "https://edit.example";
 const path = `/api/edit/v1/sites/${siteId}/operations/pages.apply/${pageId}?locale=${locale}`;
-const dependencies = { stylesVersion: "styles-1", componentsVersion: "components-1", presentationVersion: "site-1" };
+const dependencies = { componentsVersion: "components-1", presentationVersion: "site-1" };
 const actor = { kind: "machine", subject: "principal", delegatedBy: "owner", clientKind: "cli" };
 const oneLetter = { type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮ごす" };
 const oneLetterPreconditions = { parentId: "heading", oldValue: "海のそばで過ごす", textPathContext: [{ type: "target" }] };
@@ -66,7 +66,7 @@ test("pages.apply discovers the stable operation schema and retries the exact ap
   assert.equal(journal[0].inputHash.length, 64);
   assert.deepEqual(journal[0].input.operations, [oneLetter]);
   assert.equal(journal[1].input.baseVersion, applied.version);
-  assert.equal((await client.read(target)).stylesVersion, dependencies.stylesVersion);
+  assert.equal((await client.read(target)).stylesVersion, undefined);
 });
 
 test("pages.apply rejects stale dependency CAS, bad batches and unauthorized actor fields without partial writes", async () => {

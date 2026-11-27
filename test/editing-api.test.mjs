@@ -6,7 +6,7 @@ import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@n
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {}, versionedInspection = false, pagePreviewIntent, stylesVersion } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {}, versionedInspection = false, pagePreviewIntent } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
@@ -23,8 +23,7 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
       return typeof pagePreviewIntent === "function" ? pagePreviewIntent(input, requestTarget) : pagePreviewIntent;
     } }),
     async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version, ...editorSnapshot,
-      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
-        : stylesVersion === undefined ? {} : { stylesVersion }) } : null; },
+      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
     async savePage(_actor, input, expectedVersion, next) {
       if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale) return { status: "conflict" };
       if (expectedVersion !== version) return { status: "conflict" };
@@ -90,10 +89,10 @@ test("pages.inspect uses page-read authorization, returns versioned projections 
   assert.equal(result.body.version, "v1");
   assert.equal(result.body.componentsVersion, "components-v1");
   assert.equal(result.body.presentationVersion, "presentation-v1");
-  assert.equal(result.body.stylesVersion, "styles-v1");
+  assert.equal(result.body.stylesVersion, undefined);
   assert.deepEqual(result.body.items.map(({ id }) => id), ["heading"]);
   const read = await json(await send("GET", `/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${encodeURIComponent(target.locale)}`));
-  assert.deepEqual(read.body, { document: fixture, version: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" });
+  assert.deepEqual(read.body, { document: fixture, version: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1" });
   const inspect = EDITING_OPERATIONS.find(({ id }) => id === "pages.inspect");
   assert.equal(inspect.capability, "pages.read");
   assert.ok(inspect.inputSchema && inspect.resultSchema && inspect.errors.includes("invalid_cursor"));

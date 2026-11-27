@@ -17,19 +17,16 @@ niho-edit [--studio] --origin <https-origin> --site <site-id> normalize undo --j
 niho-edit [--studio] --origin <https-origin> --site <site-id> normalize verify --json <記録ファイル>
 niho-edit --origin <https-origin> --site <site-id> preview <page-id> --locale <locale> --widths 375,768,1280 [--compare published] [--out <dir>]
 niho-edit [--studio] --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
-niho-edit [--studio] --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>] [--styles-version <published-version> --site-publication-epoch <epoch>]
+niho-edit [--studio] --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit [--studio] --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> page-release-set-plan --json <items-file|-> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> page-release-set-apply --json <plan-file|->
 niho-edit --origin <https-origin> --site <site-id> page-release-set-status --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> breakpoints-read
 niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <settings-snapshot-file|->
-niho-edit --origin <https-origin> --site <site-id> styles-read
-niho-edit --origin <https-origin> --site <site-id> styles-save --json <styles-snapshot-file|->
-niho-edit --origin <https-origin> --site <site-id> styles-release-plan --json <release-request-file|->
-niho-edit --origin <https-origin> --site <site-id> styles-release --json <release-plan-file|->
-niho-edit --origin <https-origin> --site <site-id> styles-migration-plan --json <migration-request-file|->
-niho-edit --origin <https-origin> --site <site-id> styles-migration-apply --json <migration-plan-file|->
+niho-edit --origin <https-origin> --site <site-id> styles read
+niho-edit --origin <https-origin> --site <site-id> styles edit --json <edit-request-file|->
+niho-edit --origin <https-origin> --site <site-id> styles publish --json <publish-request-file|->
 niho-edit --origin <https-origin> --site <site-id> pages-catalog
 niho-edit --origin <https-origin> --site <site-id> page-change-prepare --expected-version <version> --json <change-file|->
 niho-edit --origin <https-origin> --site <site-id> page-change-apply --json <plan-file|->
@@ -70,8 +67,7 @@ niho-edit --origin <https-origin> --site <site-id> localization-settings-save --
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
 Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.
-styles-read returns { sitePublicationEpoch, draft: { version, styles }, published: { stylesVersion, styles } }. For styles-save, pass { version: draft.version, styles }.
-styles-release-plan input uses { expectedVersion: draft.version, expectedStylesVersion: published.stylesVersion, sitePublicationEpoch, operationId } from the latest styles-read snapshot.
+styles read returns { draft: { version, styles }, published: { version, styles } }. styles edit accepts { expectedVersion, edits }; rename rewrites references atomically and a referenced delete reports usages. styles publish accepts { expectedDraftVersion, expectedPublishedVersion }.
 For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
 Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.

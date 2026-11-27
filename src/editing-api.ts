@@ -5,7 +5,7 @@ import type { CmsSchema } from "./cms-v2-schema.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import { assetId, identifier, isSafeHttpsOrigin, localeCode, record } from "./validation-utils.js";
-import type { SiteStyles, SiteStylesRevision } from "./site-styles.js";
+import type { SiteStyles } from "./site-styles.js";
 import { parseBreakpointSettings } from "./style-model.js";
 import {
   parseAssetDeleteResult, parseAssetListResult, parseAssetReference, parseAssetRestoreResult, parseAssetUpdateResult,
@@ -32,25 +32,21 @@ import { parseRevisionPage } from "./history.js";
 import { parseSiteStyles } from "./site-styles.js";
 import {
   SITE_STYLES_FEATURE, SITE_STYLES_OPERATION_IDS,
-  parseEditingSiteStylesMigrationApply, parseEditingSiteStylesMigrationPlan, parseEditingSiteStylesMigrationRequest,
-  parseEditingSiteStylesReleaseApply, parseEditingSiteStylesReleasePlan, parseEditingSiteStylesReleaseRequest,
-  parseEditingSiteStylesSnapshot, siteStylesRequireMigration,
-  type EditingSiteStylesFailureStatus, type EditingSiteStylesHostAdapter,
+  parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResult, parseEditingSiteStylesPublishRequest,
+  parseEditingSiteStylesPublishResult, parseEditingSiteStylesSnapshot, type EditingSiteStylesHostAdapter,
 } from "./editing-site-styles.js";
 export {
   SITE_STYLES_FEATURE, SITE_STYLES_OPERATION_IDS,
-  type EditingSiteStylesAffected, type EditingSiteStylesFailure, type EditingSiteStylesFailureStatus,
-  type EditingSiteStylesHostAdapter, type EditingSiteStylesMigrationApply, type EditingSiteStylesMigrationChange,
-  type EditingSiteStylesMigrationPlan, type EditingSiteStylesMigrationRequest, type EditingSiteStylesMigrationResult,
-  type EditingSiteStylesOperationId, type EditingSiteStylesReleaseApply, type EditingSiteStylesReleasePlan,
-  type EditingSiteStylesReleaseRequest, type EditingSiteStylesReleaseResult, type SitePublicationEpoch,
+  type EditingSiteStylesEdit, type EditingSiteStylesEditRequest, type EditingSiteStylesEditResult,
+  type EditingSiteStylesHostAdapter, type EditingSiteStylesOperationId, type EditingSiteStylesPublishRequest,
+  type EditingSiteStylesPublishResult, type EditingSiteStylesUsage,
 } from "./editing-site-styles.js";
 import { parseSitePresentation } from "./presentation.js";
 import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 import {
   PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, legacyPageApplyInputSchema, pageApplyInputSchema, pageNodesHaveNames, pageOperationUsesNodeNames,
-  pageApplyResultSchema, pageCmsBindingsApplyInputSchema, pageCmsBindingsSchema, siteStylesPageApplyInputSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
+  pageApplyResultSchema, pageCmsBindingsApplyInputSchema, pageCmsBindingsSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
   pageOperationWire, type PageOperationJournal, type PageOperationVersions,
 } from "./editing-page-operations.js";
 import type { EditorOperationBlocks } from "./editor-model.js";
@@ -71,7 +67,7 @@ export { EDITING_EDITOR_SNAPSHOT_ACCEPT, type EditingPageEditorState } from "./e
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
   "authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_cursor", "invalid_request", "method_not_allowed", "node_not_found", "not_found", "result_too_large",
-  "site_publication_in_progress", "site_style_migration_in_progress", "style_migration_required", "validation_failed", "version_conflict"
+  "site_publication_in_progress", "validation_failed", "version_conflict"
 ] as const);
 export type EditingApiErrorCode = typeof EDITING_API_ERRORS[number];
 
@@ -95,16 +91,14 @@ export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
   readonly cmsBindings?: CmsPageBindingsDocument | null;
   readonly version: string;
-  /** Feature-aware draft style dependency; never exposed to a legacy response. */
-  readonly draftStylesVersion?: string;
   /** Must belong to the same host snapshot as document and version. */
   readonly presentation?: SitePresentation;
   /** Presence declares that the snapshot includes the editor state supported by the host. */
   readonly editorState?: EditingPageEditorState;
 };
-export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" } | { readonly status: "migration_in_progress" };
-export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" } | { readonly status: "migration_in_progress" };
-export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" } | { readonly status: "migration_in_progress" };
+export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
+export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
+export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
 export type EditingPageCatalog = { readonly version: string; readonly pages: readonly EditorPage[] };
 export type EditingPageChange = Exclude<EditorPageChange, { action: "duplicate" }>;
 export type EditingPageManagementPlan = EditorPageChangePlan & { readonly expectedVersion: string; readonly operationId: string };
@@ -127,24 +121,22 @@ export type EditingPageReleaseSetItem = {
   readonly expectedVersion: string;
   readonly componentsVersion?: string;
   readonly presentationVersion?: string;
-  readonly stylesVersion?: string;
 };
 export type EditingPageReleaseSetPlan = {
   readonly siteId: string;
   readonly operationId: string;
   readonly confirmationToken: string;
   readonly domain: string;
-  readonly sitePublicationEpoch?: string;
   readonly items: readonly EditingPageReleaseSetItem[];
 };
 export type EditingPageReleaseSetPrepareResult = { readonly status: "prepared"; readonly plan: EditingPageReleaseSetPlan }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" }
-  | { readonly status: "publication_in_progress" } | { readonly status: "migration_in_progress" };
+  | { readonly status: "publication_in_progress" };
 export type EditingPageReleaseSetItemResult = { readonly target: EditingPageTarget; readonly status: "released"; readonly version: string }
   | { readonly target: EditingPageTarget; readonly status: "conflict" | "pending" };
 export type EditingPageReleaseSetApplyResult = { readonly status: "completed" | "publishing"; readonly operationId: string; readonly items: readonly EditingPageReleaseSetItemResult[] }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" }
-  | { readonly status: "publication_in_progress" } | { readonly status: "migration_in_progress" };
+  | { readonly status: "publication_in_progress" };
 export type EditingPageReleaseSetStatus = EditingCmsOperationStatus;
 export type PageEditingValidationContext = { readonly blocks?: EditorOperationBlocks; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles; readonly locks?: readonly EditorLock[]; readonly cmsSchema?: CmsSchema; readonly cmsPagePath?: string };
 
@@ -262,7 +254,7 @@ const inspectPathNodeSchema: JsonSchema = Object.freeze({ type: "object", requir
 }) });
 const inspectResultSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["view"]), additionalProperties: false, properties: Object.freeze({
   view: Object.freeze({ type: "string", enum: Object.freeze(["outline", "find", "subtree", "effectiveStyle"]) }), version: versionSchema,
-  componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema, complete: Object.freeze({ type: "boolean" }), format: Object.freeze({ type: "string", const: "path-nodes" }),
+  componentsVersion: versionSchema, presentationVersion: versionSchema, complete: Object.freeze({ type: "boolean" }), format: Object.freeze({ type: "string", const: "path-nodes" }),
   nodeId: Object.freeze({ type: "string" }), subtree: Object.freeze({ type: "object" }), style: Object.freeze({ type: "object" }),
   definitions: Object.freeze({ type: "object", additionalProperties: true }), items: Object.freeze({ type: "array", maxItems: PAGE_INSPECT_LIMITS.maxItems, items: Object.freeze({ oneOf: Object.freeze([inspectNodeSchema, inspectPathNodeSchema]) }) }),
   nextCursor: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.maxCursorLength })
@@ -323,33 +315,22 @@ const siteStylesSchema: JsonSchema = Object.freeze({ type: "object", additionalP
   tokens: Object.freeze({ type: "object", additionalProperties: Object.freeze({ type: "object", additionalProperties: true }) }),
   textStyles: Object.freeze({ type: "object", additionalProperties: Object.freeze({ type: "object", additionalProperties: true }) })
 }) });
-const siteStylesSnapshotSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["draft", "published", "sitePublicationEpoch"]), additionalProperties: false,
+const siteStylesSnapshotSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["draft", "published"]), additionalProperties: false,
   properties: Object.freeze({
-    sitePublicationEpoch: versionSchema,
     draft: Object.freeze({ type: "object", required: Object.freeze(["version", "styles"]), additionalProperties: false, properties: Object.freeze({ version: versionSchema, styles: siteStylesSchema }) }),
-    published: Object.freeze({ type: "object", required: Object.freeze(["stylesVersion", "styles"]), additionalProperties: false, properties: Object.freeze({ stylesVersion: versionSchema, styles: siteStylesSchema }) })
+    published: Object.freeze({ type: "object", required: Object.freeze(["version", "styles"]), additionalProperties: false, properties: Object.freeze({ version: versionSchema, styles: siteStylesSchema }) })
   }) });
-const siteStylesBoundRequestProperties = Object.freeze({ expectedVersion: versionSchema, expectedStylesVersion: versionSchema,
-  sitePublicationEpoch: versionSchema, operationId: operationIdSchema });
-const siteStylesAffectedSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["kind", "id", "version"]), additionalProperties: false,
-  properties: Object.freeze({ kind: Object.freeze({ type: "string", enum: Object.freeze(["page", "locale", "component", "presentation", "shared", "template"]) }),
-    id: Object.freeze({ type: "string" }), version: versionSchema, locale: Object.freeze({ type: "string" }) }) });
-const siteStylesReleasePlanSchema: JsonSchema = Object.freeze({ type: "object",
-  required: Object.freeze(["siteId", "expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "confirmationToken", "expiresAt", "before", "after", "affected"]), additionalProperties: false,
-  properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), ...siteStylesBoundRequestProperties, confirmationToken: versionSchema,
-    expiresAt: Object.freeze({ type: "string", minLength: 24, maxLength: 24 }), before: siteStylesSchema, after: siteStylesSchema,
-    affected: Object.freeze({ type: "array", maxItems: 10000, items: siteStylesAffectedSchema }) }) });
-const siteStylesMigrationChangeSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
-  Object.freeze({ type: "object", required: Object.freeze(["kind", "styleKind", "name"]), additionalProperties: false,
-    properties: Object.freeze({ kind: Object.freeze({ const: "delete" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), name: Object.freeze({ type: "string" }) }) }),
-  Object.freeze({ type: "object", required: Object.freeze(["kind", "styleKind", "from", "to"]), additionalProperties: false,
-    properties: Object.freeze({ kind: Object.freeze({ const: "rename" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), from: Object.freeze({ type: "string" }), to: Object.freeze({ type: "string" }) }) }),
+const siteStylesEditSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
+  Object.freeze({ type: "object", required: Object.freeze(["type", "styleKind", "name", "value"]), additionalProperties: false,
+    properties: Object.freeze({ type: Object.freeze({ const: "set" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), name: Object.freeze({ type: "string" }), value: Object.freeze({ type: "object", additionalProperties: true }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["type", "styleKind", "name"]), additionalProperties: false,
+    properties: Object.freeze({ type: Object.freeze({ const: "delete" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), name: Object.freeze({ type: "string" }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["type", "styleKind", "from", "to"]), additionalProperties: false,
+    properties: Object.freeze({ type: Object.freeze({ const: "rename" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), from: Object.freeze({ type: "string" }), to: Object.freeze({ type: "string" }) }) })
 ]) });
-const siteStylesMigrationPlanSchema: JsonSchema = Object.freeze({ type: "object",
-  required: Object.freeze(["siteId", "expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "confirmationToken", "expiresAt", "classification", "before", "after", "affected", "changes"]), additionalProperties: false,
-  properties: Object.freeze({ ...(siteStylesReleasePlanSchema as Exclude<JsonSchema, boolean>).properties,
-    classification: Object.freeze({ type: "string", enum: Object.freeze(["lossless", "semantic", "visual-change"]) }),
-    changes: Object.freeze({ type: "array", minItems: 1, maxItems: 500, items: siteStylesMigrationChangeSchema }) }) });
+const siteStylesUsageSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["kind", "id"]), additionalProperties: false,
+  properties: Object.freeze({ kind: Object.freeze({ type: "string", enum: Object.freeze(["page", "locale", "component", "presentation", "shared", "template", "siteStyle"]) }),
+    id: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), path: Object.freeze({ type: "string" }) }) });
 const cmsPublishPlanSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["target", "expectedVersion", "operationId", "confirmationToken", "item"]), additionalProperties: false,
   properties: Object.freeze({ target: Object.freeze({ type: "object", required: Object.freeze(["siteId", "collectionId", "itemId"]), additionalProperties: false,
     properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), collectionId: cmsCollectionIdSchema, itemId: cmsItemIdSchema }) }), expectedVersion: versionSchema,
@@ -410,7 +391,7 @@ export const EDITING_OPERATIONS = Object.freeze([
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
       properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
-        stylesVersion: versionSchema, presentation: presentationSchema, editorState: editorStateSchema }) }),
+        presentation: presentationSchema, editorState: editorStateSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -561,33 +542,22 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }) }) }),
     resultSchema: siteStylesSnapshotSchema,
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
-  Object.freeze({ id: "site.styles.save", capability: "site.settings.write", method: "PUT", path: "/sites/{siteId}/operations/site.styles.save",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "styles"]), additionalProperties: false,
-      properties: Object.freeze({ expectedVersion: versionSchema, styles: siteStylesSchema }) }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "version"]), additionalProperties: false,
-      properties: Object.freeze({ status: Object.freeze({ const: "saved" }), version: versionSchema }) }),
-    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "site_style_migration_in_progress", "style_migration_required", "version_conflict"] as const) }),
-  Object.freeze({ id: "site.styles.release-plan", capability: "site.settings.write", method: "POST", path: "/sites/{siteId}/operations/site.styles.release-plan",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze(Object.keys(siteStylesBoundRequestProperties)), additionalProperties: false, properties: siteStylesBoundRequestProperties }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["plan"]), additionalProperties: false, properties: Object.freeze({ plan: siteStylesReleasePlanSchema }) }),
-    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "site_publication_in_progress", "site_style_migration_in_progress", "version_conflict"] as const) }),
-  Object.freeze({ id: "site.styles.release", capability: "site.settings.write", method: "POST", path: "/sites/{siteId}/operations/site.styles.release",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze([...Object.keys(siteStylesBoundRequestProperties), "confirmationToken"]), additionalProperties: false,
-      properties: Object.freeze({ ...siteStylesBoundRequestProperties, confirmationToken: versionSchema }) }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "stylesVersion", "sitePublicationEpoch"]), additionalProperties: false,
-      properties: Object.freeze({ status: Object.freeze({ const: "released" }), operationId: operationIdSchema, stylesVersion: versionSchema, sitePublicationEpoch: versionSchema }) }),
-    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "site_publication_in_progress", "site_style_migration_in_progress", "version_conflict"] as const) }),
-  Object.freeze({ id: "site.styles.migration-plan", capability: "site.settings.write", method: "POST", path: "/sites/{siteId}/operations/site.styles.migration-plan",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze([...Object.keys(siteStylesBoundRequestProperties), "changes"]), additionalProperties: false,
-      properties: Object.freeze({ ...siteStylesBoundRequestProperties, changes: Object.freeze({ type: "array", minItems: 1, maxItems: 500, items: siteStylesMigrationChangeSchema }) }) }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["plan"]), additionalProperties: false, properties: Object.freeze({ plan: siteStylesMigrationPlanSchema }) }),
-    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "site_publication_in_progress", "site_style_migration_in_progress", "validation_failed", "version_conflict"] as const) }),
-  Object.freeze({ id: "site.styles.migration-apply", capability: "site.settings.write", method: "POST", path: "/sites/{siteId}/operations/site.styles.migration-apply",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze([...Object.keys(siteStylesBoundRequestProperties), "changes", "confirmationToken"]), additionalProperties: false,
-      properties: Object.freeze({ ...siteStylesBoundRequestProperties, changes: Object.freeze({ type: "array", minItems: 1, maxItems: 500, items: siteStylesMigrationChangeSchema }), confirmationToken: versionSchema }) }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "version", "stylesVersion", "sitePublicationEpoch"]), additionalProperties: false,
-      properties: Object.freeze({ status: Object.freeze({ const: "applied" }), operationId: operationIdSchema, version: versionSchema, stylesVersion: versionSchema, sitePublicationEpoch: versionSchema }) }),
-    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "site_publication_in_progress", "site_style_migration_in_progress", "validation_failed", "version_conflict"] as const) }),
+  Object.freeze({ id: "site.styles.edit", capability: "site.settings.write", method: "PUT", path: "/sites/{siteId}/operations/site.styles.edit",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "edits"]), additionalProperties: false,
+      properties: Object.freeze({ expectedVersion: versionSchema, edits: Object.freeze({ type: "array", minItems: 1, maxItems: 500, items: siteStylesEditSchema }) }) }),
+    resultSchema: Object.freeze({ oneOf: Object.freeze([
+      Object.freeze({ type: "object", required: Object.freeze(["status", "version", "styles"]), additionalProperties: false,
+        properties: Object.freeze({ status: Object.freeze({ const: "saved" }), version: versionSchema, styles: siteStylesSchema }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status", "usages"]), additionalProperties: false,
+        properties: Object.freeze({ status: Object.freeze({ const: "referenced" }), usages: Object.freeze({ type: "array", minItems: 1, maxItems: 10000, items: siteStylesUsageSchema }) }) })
+    ]) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const) }),
+  Object.freeze({ id: "site.styles.publish", capability: "site.settings.write", method: "POST", path: "/sites/{siteId}/operations/site.styles.publish",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedDraftVersion", "expectedPublishedVersion"]), additionalProperties: false,
+      properties: Object.freeze({ expectedDraftVersion: versionSchema, expectedPublishedVersion: versionSchema }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "version", "styles"]), additionalProperties: false,
+      properties: Object.freeze({ status: Object.freeze({ const: "published" }), version: versionSchema, styles: siteStylesSchema }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const) }),
   Object.freeze({ id: "assets.list", capability: "assets.read", method: "GET", path: "/sites/{siteId}/operations/assets.list?search={search}&kind={kind}&limit={limit}&folderId={folderId}&cursor={cursor}&provider={provider}&recent={recent}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "search", "kind", "folderId", "limit"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), search: Object.freeze({ type: "string", maxLength: 200 }), kind: Object.freeze({ type: "string", enum: Object.freeze(["all", "image", "video", "pdf", "other"]) }),
@@ -658,75 +628,6 @@ export function withPageNodeNameCapability(operation: PageWriteOperation): Editi
     ? { ...operation, capabilities, inputSchema: pageApplyInputSchema }
     : { ...operation, capabilities };
 }
-const STYLE_AWARE_PAGE_OPERATIONS = new Set(["pages.inspect", "pages.read", "pages.save", "pages.apply", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set"]);
-const STYLE_MIGRATION_FENCED_LOCALIZATION_OPERATIONS = new Set([
-  "localization.items.command", "localization.items.translate", "localization.catalog.advance",
-  "localization.release.prepare", "localization.release.apply", "localization.settings.save"
-]);
-function schemaObject(schema: JsonSchema): Exclude<JsonSchema, boolean> { return schema as Exclude<JsonSchema, boolean>; }
-/** Feature-aware discovery is derived without mutating the frozen legacy catalog. */
-export function withSiteStylesFeature(operation: EditingDiscoveredOperation): EditingDiscoveredOperation {
-  if (STYLE_MIGRATION_FENCED_LOCALIZATION_OPERATIONS.has(operation.id)) {
-    const errors = [...new Set([...operation.errors, "site_style_migration_in_progress",
-      ...(["localization.release.prepare", "localization.release.apply"].includes(operation.id) ? ["site_publication_in_progress" as const] : [])])];
-    return { ...operation, errors: Object.freeze(errors) } as EditingDiscoveredOperation;
-  }
-  if (!STYLE_AWARE_PAGE_OPERATIONS.has(operation.id)) return operation;
-  const featurePath = `${operation.path}${operation.path.includes("?") ? "&" : "?"}features=site.styles`;
-  const fenceErrors = [...new Set([...operation.errors, "site_publication_in_progress", "site_style_migration_in_progress"])] as EditingApiErrorCode[];
-  if (operation.id === "pages.read" || operation.id === "pages.inspect") {
-    const result = schemaObject(operation.resultSchema), properties = { ...(result.properties ?? {}) };
-    delete properties.stylesVersion;
-    properties.draftStylesVersion = versionSchema;
-    return { ...operation, path: featurePath, resultSchema: { ...result,
-      required: Object.freeze([...(result.required ?? []).filter((key) => key !== "stylesVersion"), "draftStylesVersion"]),
-      properties: Object.freeze(properties) } } as unknown as EditingDiscoveredOperation;
-  }
-  if (operation.id === "pages.save") {
-    const input = schemaObject(operation.inputSchema);
-    return { ...operation, path: featurePath, inputSchema: { ...input,
-      required: Object.freeze([...(input.required ?? []), "draftStylesVersion"]),
-      properties: Object.freeze({ ...input.properties, draftStylesVersion: versionSchema }) }, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
-  }
-  if (operation.id === "pages.apply") {
-    const capabilities = "capabilities" in operation ? operation.capabilities : [];
-    return { ...operation, path: featurePath,
-      inputSchema: siteStylesPageApplyInputSchema(capabilities.some((capability) => capability === PAGE_NODE_NAME_CAPABILITY), capabilities.some((capability) => capability === PAGE_CMS_BINDINGS_CAPABILITY)),
-      errors: fenceErrors } as unknown as EditingDiscoveredOperation;
-  }
-  if (operation.id === "pages.release-plan") {
-    const input = schemaObject(operation.inputSchema), planResult = schemaObject(operation.resultSchema), planProperty = schemaObject(planResult.properties!.plan!);
-    return { ...operation, path: featurePath,
-      inputSchema: { ...input, required: Object.freeze([...(input.required ?? []), "stylesVersion", "sitePublicationEpoch"]),
-        properties: Object.freeze({ ...input.properties, stylesVersion: versionSchema, sitePublicationEpoch: versionSchema }) },
-      resultSchema: { ...planResult, properties: Object.freeze({ plan: { ...planProperty,
-        required: Object.freeze([...(planProperty.required ?? []), "stylesVersion", "sitePublicationEpoch"]),
-        properties: Object.freeze({ ...planProperty.properties, stylesVersion: versionSchema, sitePublicationEpoch: versionSchema }) } }) }, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
-  }
-  if (operation.id === "pages.release") {
-    const input = schemaObject(operation.inputSchema);
-    return { ...operation, path: featurePath, inputSchema: { ...input,
-      required: Object.freeze([...(input.required ?? []), "stylesVersion", "sitePublicationEpoch"]),
-      properties: Object.freeze({ ...input.properties, stylesVersion: versionSchema, sitePublicationEpoch: versionSchema }) }, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
-  }
-  if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") {
-    const input = schemaObject(operation.inputSchema);
-    const featureItem = { ...schemaObject(pageReleaseSetItemSchema), required: Object.freeze(["target", "expectedVersion", "stylesVersion"]),
-      properties: Object.freeze({ ...schemaObject(pageReleaseSetItemSchema).properties, stylesVersion: versionSchema }) };
-    const featureItems = { ...schemaObject(pageReleaseSetItemsSchema), items: Object.freeze(featureItem) };
-    const featureInput = { ...input, required: Object.freeze([...(input.required ?? []), "sitePublicationEpoch"]),
-      properties: Object.freeze({ ...input.properties, sitePublicationEpoch: versionSchema, items: featureItems }) };
-    if (operation.id === "pages.release-set-plan") {
-      const result = schemaObject(operation.resultSchema), plan = schemaObject(result.properties!.plan!);
-      return { ...operation, path: featurePath, inputSchema: featureInput,
-        resultSchema: { ...result, properties: Object.freeze({ plan: { ...plan,
-          required: Object.freeze([...(plan.required ?? []), "sitePublicationEpoch"]),
-          properties: Object.freeze({ ...plan.properties, sitePublicationEpoch: versionSchema, items: featureItems }) } }) }, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
-    }
-    return { ...operation, path: featurePath, inputSchema: featureInput, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
-  }
-  return { ...operation, path: featurePath } as unknown as EditingDiscoveredOperation;
-}
 export type EditingCapability = EditingOperationDefinition["capability"] | CapabilityValues<EditingOperationDefinition>;
 function operationCapabilities(operation: EditingOperationDefinition): readonly EditingCapability[] {
   if ("capabilityByInput" in operation) return [...new Set(Object.values(operation.capabilityByInput.values))];
@@ -741,7 +642,7 @@ export type PageEditingHostAdapter = {
   authorize(actor: EditingActor, capability: EditingCapability, target: EditingAuthorizationScope): Promise<boolean>;
   /** Enable only after this host can persist node names. Discovery still requires authorization for pages.edit. */
   pageNodeNames?: boolean;
-  /** Site-scoped immutable style snapshots and atomic release/migration transactions. */
+  /** Site-scoped draft/published snapshots with atomic edit and publish operations. */
   siteStyles?: EditingSiteStylesHostAdapter<EditingActor>;
   /** The host returns the optional CMS sidecar and atomically stores it using pageOperations. */
   pageCmsBindings?: true;
@@ -749,11 +650,11 @@ export type PageEditingHostAdapter = {
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
   /**
-   * ホストは不透明な許可をサーバーに保持し、認証主体、対象、文書版、styles/components/presentation/翻訳の版、期限、利用回数に結び付ける。
+   * ホストは不透明な許可をサーバーに保持し、認証主体、対象、文書版、components/presentation/翻訳の版、期限、利用回数に結び付ける。
    * URLには認証情報を置かず、プレビュー本体の取得時も許可を検証する。HTMLには PAGE_PREVIEW_INTENT_HEADERS を付ける。
    */
   createPagePreviewIntent?(actor: EditingActor, target: EditingPageTarget): Promise<EditingPagePreviewIntent | null>;
-  savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument, siteStylesRevision?: Extract<SiteStylesRevision, { stage: "draft" }>): Promise<EditingPageSaveResult>;
+  savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
   /** Optional version history. The API independently requires pages.history.read for both methods. */
   listPageHistory?(actor: EditingActor, target: EditingPageTarget, cursor?: string): Promise<unknown | null>;
   /** Revision id is opaque and is sent in the POST body, never in the URL. */
@@ -765,15 +666,14 @@ export type PageEditingHostAdapter = {
   /** Return a host-bound preview plan; host must verify current version and domain allowlist. */
   preparePageRelease?(actor: EditingActor, request: EditorReleaseRequest): Promise<EditingPageReleasePrepareResult>;
   /** Atomically publish after validating the one-use token; same actor + operationId + input must return the stored result. */
-  publishPage?(actor: EditingActor, target: EditingPageTarget, input: { readonly expectedVersion: string; readonly confirmationToken: string; readonly operationId: string;
-    readonly siteStylesRevision?: Extract<SiteStylesRevision, { stage: "published" }>; readonly sitePublicationEpoch?: string }): Promise<EditingPagePublishResult>;
+  publishPage?(actor: EditingActor, target: EditingPageTarget, input: { readonly expectedVersion: string; readonly confirmationToken: string; readonly operationId: string }): Promise<EditingPagePublishResult>;
   /**
    * Optional multi-page publish set. Bind every target and version into the one-use token, report each target's
    * released/conflict/pending state, and make retries idempotent per actor + operationId + input so completed targets are not published twice.
    * A top-level conflict must be returned before any target is published; per-target version conflicts belong in the item results.
    */
-  preparePageReleaseSet?(actor: EditingActor, siteId: string, operationId: string, items: readonly EditingPageReleaseSetItem[], sitePublicationEpoch?: string): Promise<EditingPageReleaseSetPrepareResult>;
-  publishPageReleaseSet?(actor: EditingActor, siteId: string, input: { readonly operationId: string; readonly confirmationToken: string; readonly items: readonly EditingPageReleaseSetItem[]; readonly sitePublicationEpoch?: string }): Promise<EditingPageReleaseSetApplyResult>;
+  preparePageReleaseSet?(actor: EditingActor, siteId: string, operationId: string, items: readonly EditingPageReleaseSetItem[]): Promise<EditingPageReleaseSetPrepareResult>;
+  publishPageReleaseSet?(actor: EditingActor, siteId: string, input: { readonly operationId: string; readonly confirmationToken: string; readonly items: readonly EditingPageReleaseSetItem[] }): Promise<EditingPageReleaseSetApplyResult>;
   readPageReleaseSetStatus?(actor: EditingActor, siteId: string, operationId: string): Promise<EditingPageReleaseSetStatus | null>;
   /** Optional site settings share the same discovery, authentication, authorization and wire contract. */
   readBreakpointSettings?(actor: EditingActor, siteId: string): Promise<EditorBreakpointSettingsSnapshot | null>;
@@ -830,15 +730,6 @@ function notModified(etag: string, vary = "Authorization, Cookie"): Response {
   } });
 }
 function fail(error: EditingApiErrorCode, status: number): Response { return response({ error }, status); }
-function siteStylesFailure(status: EditingSiteStylesFailureStatus): Response {
-  if (status === "conflict") return fail("version_conflict", 409);
-  if (status === "duplicate") return fail("duplicate_operation", 409);
-  if (status === "invalid") return fail("validation_failed", 422);
-  if (status === "not_found") return fail("not_found", 404);
-  if (status === "migration_required") return fail("style_migration_required", 422);
-  if (status === "publication_in_progress") return fail("site_publication_in_progress", 409);
-  return fail("site_style_migration_in_progress", 409);
-}
 function validVersion(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value); }
 function validActor(value: unknown): value is EditingActor {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -895,9 +786,9 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   if (operation.id === "pages.change-apply") return typeof adapter.releaseSite === "function" && typeof adapter.applyPageChange === "function";
   if (operation.id === "site.breakpoints.read") return typeof adapter.readBreakpointSettings === "function";
   if (operation.id === "site.breakpoints.save") return typeof adapter.saveBreakpointSettings === "function";
-  if (operation.id === "site.styles.read" || operation.id === "site.styles.save") return typeof adapter.siteStyles?.read === "function" && typeof adapter.siteStyles?.save === "function";
-  if (operation.id === "site.styles.release-plan" || operation.id === "site.styles.release") return typeof adapter.siteStyles?.prepareRelease === "function" && typeof adapter.siteStyles?.release === "function";
-  if (operation.id === "site.styles.migration-plan" || operation.id === "site.styles.migration-apply") return typeof adapter.siteStyles?.prepareMigration === "function" && typeof adapter.siteStyles?.applyMigration === "function";
+  if (operation.id === "site.styles.read") return typeof adapter.siteStyles?.read === "function";
+  if (operation.id === "site.styles.edit") return typeof adapter.siteStyles?.edit === "function";
+  if (operation.id === "site.styles.publish") return typeof adapter.siteStyles?.publish === "function";
   if (operation.id === "cms.schema") return typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.list") return typeof adapter.listCmsItems === "function";
   if (operation.id === "cms.read") return typeof adapter.readCmsItem === "function" && typeof adapter.readCmsSchema === "function";
@@ -927,29 +818,27 @@ function cmsTarget(siteId: string, collectionId: unknown, itemId: unknown): Edit
   const collection = cmsCollectionId(collectionId), item = cmsItemId(itemId);
   return collection && item ? { siteId, collectionId: collection, itemId: item } : null;
 }
-function pageReleaseSetItems(value: unknown, siteId: string, styleFeature = false): EditingPageReleaseSetItem[] | null {
+function pageReleaseSetItems(value: unknown, siteId: string): EditingPageReleaseSetItem[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > 50) return null;
   const items: EditingPageReleaseSetItem[] = [];
   const seen = new Set<string>();
   for (const raw of value) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const item = raw as Record<string, unknown>;
-    const allowed = ["target", "expectedVersion", "componentsVersion", "presentationVersion", ...(styleFeature ? ["stylesVersion"] : [])];
+    const allowed = ["target", "expectedVersion", "componentsVersion", "presentationVersion"];
     if (!Object.keys(item).every((key) => allowed.includes(key)) || !item.target || typeof item.target !== "object" || Array.isArray(item.target)) return null;
     const targetValue = item.target as Record<string, unknown>;
     if (!exactKeys(targetValue, ["siteId", "pageId", "locale"])) return null;
     const target = pageTarget(targetValue.siteId, targetValue.pageId, targetValue.locale);
     if (!target || target.siteId !== siteId || !validVersion(item.expectedVersion)
       || item.componentsVersion !== undefined && !validVersion(item.componentsVersion)
-      || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)
-      || styleFeature && !validVersion(item.stylesVersion)) return null;
+      || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)) return null;
     const key = `${target.pageId}\u0000${target.locale}`;
     if (seen.has(key)) return null;
     seen.add(key);
     items.push({ target, expectedVersion: item.expectedVersion,
       ...(item.componentsVersion === undefined ? {} : { componentsVersion: item.componentsVersion }),
-      ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }),
-      ...(item.stylesVersion === undefined ? {} : { stylesVersion: item.stylesVersion as string }) });
+      ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }) });
   }
   return items;
 }
@@ -957,8 +846,7 @@ function samePageReleaseSetItems(left: readonly EditingPageReleaseSetItem[], rig
   return left.length === right.length && left.every((item, index) => {
     const other = right[index];
     return !!other && item.target.siteId === other.target.siteId && item.target.pageId === other.target.pageId && item.target.locale === other.target.locale
-      && item.expectedVersion === other.expectedVersion && item.componentsVersion === other.componentsVersion && item.presentationVersion === other.presentationVersion
-      && item.stylesVersion === other.stylesVersion;
+      && item.expectedVersion === other.expectedVersion && item.componentsVersion === other.componentsVersion && item.presentationVersion === other.presentationVersion;
   });
 }
 function pageReleaseSetApplyResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): EditingPageReleaseSetApplyResult | null {
@@ -1057,24 +945,22 @@ function catalogPage(value: unknown, siteId: string): EditorPage | null {
       ...(source.visibility === undefined ? {} : { visibility: source.visibility as NonNullable<EditorPage["visibility"]> }), ...(source.published === undefined ? {} : { published: source.published }) };
   } catch { return null; }
 }
-function releaseRequest(value: Record<string, unknown>, target: EditingPageTarget, styleFeature = false): EditorReleaseRequest | null {
-  const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", ...(styleFeature ? ["stylesVersion", "sitePublicationEpoch"] : [])];
+function releaseRequest(value: Record<string, unknown>, target: EditingPageTarget): EditorReleaseRequest | null {
+  const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
   if (Object.keys(value).some((key) => !allowed.includes(key)) || !validVersion(value.expectedVersion)
     || value.action !== "publish" && value.action !== "rollback"
     || value.action === "publish" && value.revision !== undefined
     || value.action === "rollback" && (!Number.isSafeInteger(value.revision) || Number(value.revision) < 1)
     || value.componentsVersion !== undefined && !validVersion(value.componentsVersion)
-    || value.presentationVersion !== undefined && !validVersion(value.presentationVersion)
-    || styleFeature && (!validVersion(value.stylesVersion) || !validVersion(value.sitePublicationEpoch))) return null;
+    || value.presentationVersion !== undefined && !validVersion(value.presentationVersion)) return null;
   return {
     target, expectedVersion: value.expectedVersion, action: value.action,
     ...(value.revision === undefined ? {} : { revision: Number(value.revision) }),
     ...(value.componentsVersion === undefined ? {} : { componentsVersion: value.componentsVersion }),
-    ...(value.presentationVersion === undefined ? {} : { presentationVersion: value.presentationVersion }),
-    ...(styleFeature ? { siteStylesRevision: { stage: "published" as const, version: value.stylesVersion as string }, sitePublicationEpoch: value.sitePublicationEpoch as string } : {})
+    ...(value.presentationVersion === undefined ? {} : { presentationVersion: value.presentationVersion })
   };
 }
-const PLAN_KEYS = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "siteStylesRevision", "sitePublicationEpoch", "confirmationToken", "domain", "changes", "url", "affected"] as const;
+const PLAN_KEYS = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "confirmationToken", "domain", "changes", "url", "affected"] as const;
 function validReleasePlan(value: unknown, request: EditorReleaseRequest, site: EditorSite): value is EditorReleasePlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const plan = value as Record<string, unknown>;
@@ -1110,11 +996,11 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
-async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, pageCmsBindings: boolean, request: Request, actor: EditingActor, target: EditingPageTarget, siteStylesFeature = false): Promise<Response> {
+async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, pageCmsBindings: boolean, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
   if (!actor.clientKind) return fail("host_contract_violation", 502);
   let body: Record<string, unknown> | null;
   try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-  const versionFields = siteStylesFeature ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] : PAGE_OPERATION_VERSIONS;
+  const versionFields = PAGE_OPERATION_VERSIONS;
   if (!body || Object.keys(body).some((key) => !["baseVersion", "operationId", "operations", "dryRun", ...(pageCmsBindings ? ["cmsBindings"] : []), ...versionFields].includes(key))
     || !validVersion(body.baseVersion) || !validOperationId(body.operationId)
     || body.dryRun !== undefined && typeof body.dryRun !== "boolean"
@@ -1132,8 +1018,7 @@ async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: 
   let cmsBindings: CmsPageBindingsDocument | null | undefined;
   try { cmsBindings = body.cmsBindings == null ? body.cmsBindings : parseCmsPageBindings(body.cmsBindings, target); }
   catch { return fail("invalid_request", 400); }
-  const dependencies = Object.fromEntries(versionFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]])) as
-    PageOperationVersions & Pick<EditingPageApplyInput, "draftStylesVersion">;
+  const dependencies = Object.fromEntries(versionFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]])) as PageOperationVersions;
   const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations,
     ...(cmsBindings === undefined ? {} : { cmsBindings }) };
   const dryRun = body.dryRun === true;
@@ -1149,7 +1034,6 @@ async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: 
   if (!result || typeof result !== "object") return fail("host_contract_violation", 502);
   switch (result.status) {
     case "not_found": return fail("not_found", 404);
-    case "migration_in_progress": return fail("site_style_migration_in_progress", 409);
     case "host_contract_violation": return fail("host_contract_violation", 502);
     case "conflict": {
       if (result.unmetPreconditions === undefined) return fail("version_conflict", 409);
@@ -1226,9 +1110,6 @@ async function handleEditingLocalization<Id extends EditingLocalizationOperation
     const source = record(raw, "$result");
     if (source.status === "duplicate" && "operationId" in input && operation.errors.includes("duplicate_operation")
       && exactKeys(source, ["status"])) return fail("duplicate_operation", 409);
-    if (source.status === "migration_in_progress" && "expectedVersion" in input && exactKeys(source, ["status"])) {
-      return fail("site_style_migration_in_progress", 409);
-    }
     if (source.status === "publication_in_progress" && (operation.id === "localization.release.prepare" || operation.id === "localization.release.apply")
       && exactKeys(source, ["status"])) return fail("site_publication_in_progress", 409);
     if (source.status === "invalid_token" && (operation.id === "localization.release.apply"
@@ -1259,8 +1140,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       let siteId: string;
       try { siteId = identifier(decodeURIComponent(discoveryMatch[1]!), "$siteId"); }
       catch { return fail("invalid_request", 400); }
-      // A host that has not implemented the immutable snapshots and atomic fences must reject
-      // feature negotiation so a new client can retry the byte-compatible legacy discovery.
+      // Hosts opt into the site-wide draft/published style operations as one capability.
       if (siteStylesFeature && !adapter.siteStyles) return fail("invalid_request", 400);
       let actor: EditingActor | null;
       try { actor = await adapter.authenticate(request); }
@@ -1273,7 +1153,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (styleOperation && !siteStylesFeature) continue;
         if (!supportsOperation(adapter, operation)) continue;
         try {
-          const siteWideStyleWrite = operation.id.startsWith("site.styles.") && !["site.styles.read", "site.styles.save"].includes(operation.id);
+          const siteWideStyleWrite = operation.id === "site.styles.publish";
           const allowed = siteWideStyleWrite
             ? await adapter.authorize(actor, "site.settings.write", { siteId }) === true && await adapter.authorize(actor, "pages.publish", { siteId }) === true
             : (await Promise.all(operationCapabilities(operation).map((capability) => adapter.authorize(actor, capability, { siteId })))).some(Boolean);
@@ -1284,7 +1164,6 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
           } else if (adapter.pageNodeNames === true && (operation.id === "pages.apply" || operation.id === "pages.save")) {
             discoveredOperation = withPageNodeNameCapability(operation as PageWriteOperation);
           }
-          if (siteStylesFeature) discoveredOperation = withSiteStylesFeature(discoveredOperation);
           operations.push(discoveredOperation);
         }
         catch { return fail("host_failure", 503); }
@@ -1292,7 +1171,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (operations.length === 0) return fail("forbidden", 403);
       return response({ apiVersion: "v1", siteId, operations });
     }
-    const siteStylesMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(site\\.styles\\.(?:read|save|release-plan|release|migration-plan|migration-apply))$`, "u").exec(url.pathname);
+    const siteStylesMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(site\\.styles\\.(?:read|edit|publish))$`, "u").exec(url.pathname);
     if (siteStylesMatch) {
       let siteId: string;
       try { siteId = identifier(decodeURIComponent(siteStylesMatch[1]!), "$siteId"); }
@@ -1311,7 +1190,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
           if (await adapter.authorize(actor, "site.settings.read", { siteId }) !== true) return fail("forbidden", 403);
         } else {
           if (await adapter.authorize(actor, "site.settings.write", { siteId }) !== true) return fail("forbidden", 403);
-          if (!["site.styles.save"].includes(operation.id) && await adapter.authorize(actor, "pages.publish", { siteId }) !== true) return fail("forbidden", 403);
+          if (operation.id === "site.styles.publish" && await adapter.authorize(actor, "pages.publish", { siteId }) !== true) return fail("forbidden", 403);
         }
       } catch { return fail("host_failure", 503); }
       if (operation.id === "site.styles.read") {
@@ -1326,68 +1205,22 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       let body: Record<string, unknown> | null;
       try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
       if (!body) return fail("invalid_request", 400);
-      if (operation.id === "site.styles.save") {
-        if (!exactKeys(body, ["expectedVersion", "styles"]) || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
-        let styles: SiteStyles;
-        try { styles = parseSiteStyles(body.styles as SiteStyles); } catch { return fail("invalid_request", 400); }
-        let rawCurrent: Awaited<ReturnType<NonNullable<PageEditingHostAdapter["siteStyles"]>["read"]>>;
-        try { rawCurrent = await adapter.siteStyles!.read(actor, siteId); }
-        catch { return fail("host_failure", 503); }
-        if (rawCurrent === null) return fail("not_found", 404);
-        let current: ReturnType<typeof parseEditingSiteStylesSnapshot>;
-        try { current = parseEditingSiteStylesSnapshot(rawCurrent); }
-        catch { return fail("host_contract_violation", 502); }
-        if (current.draft.version !== body.expectedVersion) return fail("version_conflict", 409);
-        if (siteStylesRequireMigration(current.draft.styles, styles)) return fail("style_migration_required", 422);
-        let saved: Awaited<ReturnType<NonNullable<PageEditingHostAdapter["siteStyles"]>["save"]>>;
-        try { saved = await adapter.siteStyles!.save(actor, siteId, body.expectedVersion, styles); }
-        catch { return fail("host_failure", 503); }
-        if (!saved || typeof saved !== "object" || typeof saved.status !== "string") return fail("host_contract_violation", 502);
-        if (saved.status !== "saved") return siteStylesFailure(saved.status);
-        if (!validVersion(saved.version) || saved.version === body.expectedVersion) return fail("host_contract_violation", 502);
-        return response({ status: "saved", version: saved.version });
-      }
-      if (operation.id === "site.styles.release-plan") {
+      if (operation.id === "site.styles.edit") {
         let input;
-        try { input = parseEditingSiteStylesReleaseRequest(body); } catch { return fail("invalid_request", 400); }
-        let prepared;
-        try { prepared = await adapter.siteStyles!.prepareRelease!(actor, siteId, input); } catch { return fail("host_failure", 503); }
-        if (!prepared || typeof prepared !== "object" || typeof prepared.status !== "string") return fail("host_contract_violation", 502);
-        if (prepared.status !== "prepared") return siteStylesFailure(prepared.status);
-        try { return response({ plan: parseEditingSiteStylesReleasePlan(prepared.plan, input, siteId) }); }
-        catch { return fail("host_contract_violation", 502); }
-      }
-      if (operation.id === "site.styles.release") {
-        let input;
-        try { input = parseEditingSiteStylesReleaseApply(body); } catch { return fail("invalid_request", 400); }
-        let released;
-        try { released = await adapter.siteStyles!.release!(actor, siteId, input); } catch { return fail("host_failure", 503); }
-        if (!released || typeof released !== "object" || typeof released.status !== "string") return fail("host_contract_violation", 502);
-        if (released.status !== "released") return siteStylesFailure(released.status);
-        if (released.operationId !== input.operationId || !validVersion(released.stylesVersion) || released.stylesVersion === input.expectedStylesVersion
-          || !validVersion(released.sitePublicationEpoch) || released.sitePublicationEpoch === input.sitePublicationEpoch) return fail("host_contract_violation", 502);
-        return response(released);
-      }
-      if (operation.id === "site.styles.migration-plan") {
-        let input;
-        try { input = parseEditingSiteStylesMigrationRequest(body); } catch { return fail("invalid_request", 400); }
-        let prepared;
-        try { prepared = await adapter.siteStyles!.prepareMigration!(actor, siteId, input); } catch { return fail("host_failure", 503); }
-        if (!prepared || typeof prepared !== "object" || typeof prepared.status !== "string") return fail("host_contract_violation", 502);
-        if (prepared.status !== "prepared") return siteStylesFailure(prepared.status);
-        try { return response({ plan: parseEditingSiteStylesMigrationPlan(prepared.plan, input, siteId) }); }
+        try { input = parseEditingSiteStylesEditRequest(body); } catch { return fail("invalid_request", 400); }
+        let result;
+        try { result = await adapter.siteStyles!.edit(actor, siteId, input); } catch { return fail("host_failure", 503); }
+        if (result.status === "conflict") return fail("version_conflict", 409);
+        try { return response(parseEditingSiteStylesEditResult(result, input.expectedVersion)); }
         catch { return fail("host_contract_violation", 502); }
       }
       let input;
-      try { input = parseEditingSiteStylesMigrationApply(body); } catch { return fail("invalid_request", 400); }
-      let applied;
-      try { applied = await adapter.siteStyles!.applyMigration!(actor, siteId, input); } catch { return fail("host_failure", 503); }
-      if (!applied || typeof applied !== "object" || typeof applied.status !== "string") return fail("host_contract_violation", 502);
-      if (applied.status !== "applied") return siteStylesFailure(applied.status);
-      if (applied.operationId !== input.operationId || !validVersion(applied.version) || applied.version === input.expectedVersion
-        || !validVersion(applied.stylesVersion) || applied.stylesVersion === input.expectedStylesVersion
-        || !validVersion(applied.sitePublicationEpoch) || applied.sitePublicationEpoch === input.sitePublicationEpoch) return fail("host_contract_violation", 502);
-      return response(applied);
+      try { input = parseEditingSiteStylesPublishRequest(body); } catch { return fail("invalid_request", 400); }
+      let result;
+      try { result = await adapter.siteStyles!.publish(actor, siteId, input); } catch { return fail("host_failure", 503); }
+      if (result.status === "conflict") return fail("version_conflict", 409);
+      try { return response(parseEditingSiteStylesPublishResult(result, input.expectedPublishedVersion)); }
+      catch { return fail("host_contract_violation", 502); }
     }
     const localizationMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(localization\\.[a-z.]+)$`, "u").exec(url.pathname);
     if (localizationMatch) {
@@ -1409,8 +1242,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       const operation = EDITING_OPERATIONS.find((item) => item.id === releaseSetMatch[2]);
       if (!operation || !supportsOperation(adapter, operation)) return fail("not_found", 404);
       if (request.method !== operation.method) return fail("method_not_allowed", 405);
-      const siteStylesFeature = url.search === `?features=${SITE_STYLES_FEATURE}`;
-      if (url.search && !siteStylesFeature || siteStylesFeature && !adapter.siteStyles) return fail("invalid_request", 400);
+      if (url.search) return fail("invalid_request", 400);
       if (operation.id === "pages.release-set-status" && (!operationId || !validOperationId(operationId))
         || operation.id !== "pages.release-set-status" && operationId !== undefined) return fail("invalid_request", 400);
       let actor: EditingActor | null;
@@ -1441,13 +1273,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       let body: Record<string, unknown> | null;
       try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
       if (!body || body.siteId !== siteId || !validOperationId(body.operationId)) return fail("invalid_request", 400);
-      const items = pageReleaseSetItems(body.items, siteId, siteStylesFeature);
+      const items = pageReleaseSetItems(body.items, siteId);
       if (!items) return fail("invalid_request", 400);
       if (operation.id === "pages.release-set-plan") {
-        if (!exactKeys(body, ["siteId", "operationId", "items", ...(siteStylesFeature ? ["sitePublicationEpoch"] : [])])
-          || siteStylesFeature && !validVersion(body.sitePublicationEpoch)) return fail("invalid_request", 400);
-      } else if (!exactKeys(body, ["siteId", "operationId", "confirmationToken", "items", ...(siteStylesFeature ? ["sitePublicationEpoch"] : [])]) || !validVersion(body.confirmationToken)
-        || siteStylesFeature && !validVersion(body.sitePublicationEpoch)) {
+        if (!exactKeys(body, ["siteId", "operationId", "items"])) return fail("invalid_request", 400);
+      } else if (!exactKeys(body, ["siteId", "operationId", "confirmationToken", "items"]) || !validVersion(body.confirmationToken)) {
         return fail("invalid_request", 400);
       }
       for (const item of items) {
@@ -1458,42 +1288,38 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       }
       if (operation.id === "pages.release-set-plan") {
         let prepared: EditingPageReleaseSetPrepareResult;
-        try { prepared = await adapter.preparePageReleaseSet!(actor, siteId, body.operationId, items, siteStylesFeature ? body.sitePublicationEpoch as string : undefined); }
+        try { prepared = await adapter.preparePageReleaseSet!(actor, siteId, body.operationId, items); }
         catch { return fail("host_failure", 503); }
-        if (!prepared || !["prepared", "conflict", "invalid", "not_found", "duplicate", "publication_in_progress", "migration_in_progress"].includes(prepared.status)) return fail("host_contract_violation", 502);
+        if (!prepared || !["prepared", "conflict", "invalid", "not_found", "duplicate", "publication_in_progress"].includes(prepared.status)) return fail("host_contract_violation", 502);
         if (prepared.status === "conflict") return fail("version_conflict", 409);
         if (prepared.status === "invalid") return fail("invalid_request", 400);
         if (prepared.status === "not_found") return fail("not_found", 404);
         if (prepared.status === "duplicate") return fail("duplicate_operation", 409);
         if (prepared.status === "publication_in_progress") return fail("site_publication_in_progress", 409);
-        if (prepared.status === "migration_in_progress") return fail("site_style_migration_in_progress", 409);
         const plan = prepared.plan as unknown;
         if (!plan || typeof plan !== "object" || Array.isArray(plan)) return fail("host_contract_violation", 502);
         const source = plan as Record<string, unknown>;
-        const planItems = pageReleaseSetItems(source.items, siteId, siteStylesFeature);
+        const planItems = pageReleaseSetItems(source.items, siteId);
         let site: EditorSite | null;
         try { site = await adapter.releaseSite!(actor, siteId); }
         catch { return fail("host_failure", 503); }
-        if (!exactKeys(source, ["siteId", "operationId", "confirmationToken", "domain", "items", ...(siteStylesFeature ? ["sitePublicationEpoch"] : [])]) || source.siteId !== siteId
+        if (!exactKeys(source, ["siteId", "operationId", "confirmationToken", "domain", "items"]) || source.siteId !== siteId
           || source.operationId !== body.operationId || !validVersion(source.confirmationToken) || !isSafeHttpsOrigin(source.domain)
-          || siteStylesFeature && source.sitePublicationEpoch !== body.sitePublicationEpoch
           || !planItems || !samePageReleaseSetItems(items, planItems) || !site || site.id !== siteId || !Array.isArray(site.domains) || !site.domains.includes(source.domain)) {
           return fail("host_contract_violation", 502);
         }
-        return response({ plan: { siteId, operationId: source.operationId, confirmationToken: source.confirmationToken, domain: source.domain, items: planItems,
-          ...(siteStylesFeature ? { sitePublicationEpoch: source.sitePublicationEpoch } : {}) } });
+        return response({ plan: { siteId, operationId: source.operationId, confirmationToken: source.confirmationToken, domain: source.domain, items: planItems } });
       }
       let applied: EditingPageReleaseSetApplyResult;
       try { applied = await adapter.publishPageReleaseSet!(actor, siteId, { operationId: body.operationId,
-        confirmationToken: body.confirmationToken as string, items, ...(siteStylesFeature ? { sitePublicationEpoch: body.sitePublicationEpoch as string } : {}) }); }
+        confirmationToken: body.confirmationToken as string, items }); }
       catch { return fail("host_failure", 503); }
-      if (!applied || !["completed", "publishing", "conflict", "invalid", "not_found", "duplicate", "publication_in_progress", "migration_in_progress"].includes(applied.status)) return fail("host_contract_violation", 502);
+      if (!applied || !["completed", "publishing", "conflict", "invalid", "not_found", "duplicate", "publication_in_progress"].includes(applied.status)) return fail("host_contract_violation", 502);
       if (applied.status === "conflict") return fail("version_conflict", 409);
       if (applied.status === "invalid") return fail("invalid_request", 400);
       if (applied.status === "not_found") return fail("not_found", 404);
       if (applied.status === "duplicate") return fail("duplicate_operation", 409);
       if (applied.status === "publication_in_progress") return fail("site_publication_in_progress", 409);
-      if (applied.status === "migration_in_progress") return fail("site_style_migration_in_progress", 409);
       const result = pageReleaseSetApplyResult(applied, siteId, body.operationId, items);
       if (!result) return fail("host_contract_violation", 502);
       return response(result);
@@ -1952,16 +1778,13 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
     if (!operation || ["pages.apply", "pages.history", "pages.history-read", "pages.preview-intent"].includes(operation.id) && !supportsOperation(adapter, operation)) return fail("not_found", 404);
-    const styleFeatureValues = url.searchParams.getAll("features"), siteStylesFeature = styleFeatureValues.length === 1 && styleFeatureValues[0] === SITE_STYLES_FEATURE;
-    if (styleFeatureValues.length && !siteStylesFeature || siteStylesFeature && !STYLE_AWARE_PAGE_OPERATIONS.has(operation.id)) return fail("invalid_request", 400);
-    if (siteStylesFeature && !adapter.siteStyles) return fail("not_found", 404);
     let inspectQuery: PageInspectQuery | null = null;
     let historyCursor: string | undefined;
     if (operation.id === "pages.inspect") {
       const input: Record<string, unknown> = {};
       let repeated = false;
       url.searchParams.forEach((value, key) => {
-        if (key === "locale" || key === "features") return;
+        if (key === "locale") return;
         if (Object.hasOwn(input, key)) repeated = true;
         input[key] = value;
       });
@@ -1975,7 +1798,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         else historyCursor = value;
       });
       if (repeated) return fail("invalid_request", 400);
-    } else if (url.searchParams.size !== (siteStylesFeature ? 2 : 1)) return fail("invalid_request", 400);
+    } else if (url.searchParams.size !== 1) return fail("invalid_request", 400);
     if (request.method !== operation.method) return fail("method_not_allowed", 405);
     let actor: EditingActor | null;
     try { actor = await adapter.authenticate(request); }
@@ -2031,7 +1854,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
       return response(result);
     }
-    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, adapter.pageCmsBindings === true, request, actor, target, siteStylesFeature);
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, adapter.pageCmsBindings === true, request, actor, target);
     if (operation.id === "pages.preview-intent") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
@@ -2051,9 +1874,8 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       catch { return fail("host_failure", 503); }
       if (!snapshot) return fail("not_found", 404);
       if (!validVersion(snapshot.version)) return fail("host_contract_violation", 502);
-      const dependencyFields = siteStylesFeature ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] as const : PAGE_OPERATION_VERSIONS;
+      const dependencyFields = PAGE_OPERATION_VERSIONS;
       const dependencies = Object.fromEntries(dependencyFields.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
-      if (siteStylesFeature && !validVersion(snapshot.draftStylesVersion)) return fail("host_contract_violation", 502);
       if (Object.values(dependencies).some((value) => !validVersion(value))) return fail("host_contract_violation", 502);
       const editorSnapshotRequest = operation.id === "pages.read" && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT;
       const readEtag = operation.id === "pages.read"
@@ -2106,7 +1928,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-      const release = body && releaseRequest(body, target, siteStylesFeature);
+      const release = body && releaseRequest(body, target);
       if (!release) return fail("invalid_request", 400);
       let planResult: EditingPageReleasePrepareResult;
       let site: EditorSite | null;
@@ -2115,33 +1937,23 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (!site || site.id !== target.siteId || !Array.isArray(site.domains) || site.domains.length === 0) return fail("host_contract_violation", 502);
         planResult = await adapter.preparePageRelease!(actor, release);
       } catch { return fail("host_failure", 503); }
-      if (!planResult || typeof planResult !== "object" || !["prepared", "conflict", "publication_in_progress", "migration_in_progress"].includes(planResult.status)) return fail("host_contract_violation", 502);
+      if (!planResult || typeof planResult !== "object" || !["prepared", "conflict", "publication_in_progress"].includes(planResult.status)) return fail("host_contract_violation", 502);
       if (planResult.status === "conflict") return fail("version_conflict", 409);
       if (planResult.status === "publication_in_progress") return fail("site_publication_in_progress", 409);
-      if (planResult.status === "migration_in_progress") return fail("site_style_migration_in_progress", 409);
       if (!validReleasePlan(planResult.plan, release, site)) return fail("host_contract_violation", 502);
-      if (siteStylesFeature) {
-        const { siteStylesRevision, ...rest } = planResult.plan;
-        if (siteStylesRevision?.stage !== "published" || !validVersion(siteStylesRevision.version) || !validVersion(planResult.plan.sitePublicationEpoch)) return fail("host_contract_violation", 502);
-        return response({ plan: { ...rest, stylesVersion: siteStylesRevision.version } });
-      }
       return response({ plan: planResult.plan });
     }
     if (operation.id === "pages.release") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-      const releaseKeys = siteStylesFeature ? ["expectedVersion", "confirmationToken", "operationId", "stylesVersion", "sitePublicationEpoch"] : ["expectedVersion", "confirmationToken", "operationId"];
-      if (!body || !exactKeys(body, releaseKeys)
-        || !validVersion(body.expectedVersion) || !validVersion(body.confirmationToken) || !validOperationId(body.operationId)
-        || siteStylesFeature && (!validVersion(body.stylesVersion) || !validVersion(body.sitePublicationEpoch))) return fail("invalid_request", 400);
+      if (!body || !exactKeys(body, ["expectedVersion", "confirmationToken", "operationId"])
+        || !validVersion(body.expectedVersion) || !validVersion(body.confirmationToken) || !validOperationId(body.operationId)) return fail("invalid_request", 400);
       let result: EditingPagePublishResult;
-      try { result = await adapter.publishPage!(actor, target, { expectedVersion: body.expectedVersion, confirmationToken: body.confirmationToken, operationId: body.operationId,
-        ...(siteStylesFeature ? { siteStylesRevision: { stage: "published", version: body.stylesVersion as string }, sitePublicationEpoch: body.sitePublicationEpoch as string } : {}) }); }
+      try { result = await adapter.publishPage!(actor, target, { expectedVersion: body.expectedVersion, confirmationToken: body.confirmationToken, operationId: body.operationId }); }
       catch { return fail("host_failure", 503); }
-      if (!result || typeof result !== "object" || !["released", "conflict", "publication_in_progress", "migration_in_progress"].includes(result.status)) return fail("host_contract_violation", 502);
+      if (!result || typeof result !== "object" || !["released", "conflict", "publication_in_progress"].includes(result.status)) return fail("host_contract_violation", 502);
       if (result.status === "conflict") return fail("version_conflict", 409);
       if (result.status === "publication_in_progress") return fail("site_publication_in_progress", 409);
-      if (result.status === "migration_in_progress") return fail("site_style_migration_in_progress", 409);
       if (result.status !== "released" || result.operationId !== body.operationId || !validVersion(result.version)) return fail("host_contract_violation", 502);
       let document: PageDocument;
       try { document = validatedDocument(result.document, await documentContext(adapter, actor, target)); }
@@ -2151,9 +1963,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     }
     let body: Record<string, unknown> | null;
     try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-    const saveKeys = siteStylesFeature ? ["expectedVersion", "draftStylesVersion", "document"] : ["expectedVersion", "document"];
-    if (!body || !exactKeys(body, saveKeys) || !validVersion(body.expectedVersion)
-      || siteStylesFeature && !validVersion(body.draftStylesVersion)) return fail("invalid_request", 400);
+    if (!body || !exactKeys(body, ["expectedVersion", "document"]) || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
     let context: PageEditingValidationContext;
     try { context = await documentContext(adapter, actor, target); }
     catch { return fail("host_failure", 503); }
@@ -2163,10 +1973,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("invalid_request", 400);
     if (adapter.pageNodeNames !== true && pageNodesHaveNames(document.body)) return fail("forbidden", 403);
     let result: EditingPageSaveResult;
-    try { result = await adapter.savePage(actor, target, body.expectedVersion, document, siteStylesFeature ? { stage: "draft", version: body.draftStylesVersion as string } : undefined); }
+    try { result = await adapter.savePage(actor, target, body.expectedVersion, document); }
     catch { return fail("host_failure", 503); }
     if (result.status === "conflict") return fail("version_conflict", 409);
-    if (result.status === "migration_in_progress") return fail("site_style_migration_in_progress", 409);
     if (result.status !== "saved" || !validVersion(result.version)) return fail("host_contract_violation", 502);
     let savedDocument: PageDocument;
     try { savedDocument = validatedDocument(result.document, context); }

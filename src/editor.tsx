@@ -86,7 +86,7 @@ const needsPageSave = (session: Session) => {
 };
 function editorSessionFreshness(session: Session): string {
   return JSON.stringify([session.version, session.saved, session.dependencyVersions, session.hasSavedDraft ?? null, session.locks, session.releases,
-    session.readOnly ?? null, session.presentation?.version ?? null, session.publishedSiteStylesVersion ?? null, session.sitePublicationEpoch ?? null, session.englishPublication ?? null, session.cmsBindings ?? null]);
+    session.readOnly ?? null, session.presentation?.version ?? null, session.englishPublication ?? null, session.cmsBindings ?? null]);
 }
 type PagePrefetch = { controller: AbortController; promise: Promise<EditorSessionLoad>; blocks: EditorBlockRegistry; components?: ComponentLibrary; completedAt?: number };
 const PAGE_PREFETCH_MAX_AGE_MS = 10_000;
@@ -738,11 +738,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 訳文の原文検証・再構成には保存済みのサイト共通スタイルを使う。設定を読むホストでは読込が終わるまで待ち、読めなければ文書と同じ読込で得た設定か文書単体で進める。
   const savedSiteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" || siteSettings.status === "error";
   const savedSiteStyles = siteSettings.status === "ready" ? siteSettings.settings : session?.siteStyles;
-  const savedSiteStylesVersion = siteSettings.status === "ready" ? siteSettings.version : undefined;
-  const savedSiteStylesRevision = useMemo(() => savedSiteStylesVersion
-    ? { stage: "draft" as const, version: savedSiteStylesVersion } : undefined, [savedSiteStylesVersion]);
   const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent,
-    savedSiteStylesReady && (!savedSiteStyles || !!savedSiteStylesRevision), savedSiteStyles, savedSiteStylesRevision, loadEpoch, setNotice);
+    savedSiteStylesReady, savedSiteStyles, loadEpoch, setNotice);
   const sessionLocalizationSite = localization.site?.config.siteId === session?.target.siteId ? localization.site : null;
   let selectedLocale: LocalizationLocale | undefined;
   try { if (sessionLocalizationSite && session) selectedLocale = editorLocalizationLocaleFor(sessionLocalizationSite.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
@@ -868,7 +865,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const controller = new AbortController();
     const currentSiteSettings = siteSettingsRef.current;
     const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
-      ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
+      ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version,
+        ...(currentSiteSettings.publishedVersion === undefined ? {} : { publishedVersion: currentSiteSettings.publishedVersion }),
+        ...(currentSiteSettings.publishedStyles === undefined ? {} : { publishedStyles: currentSiteSettings.publishedStyles }) } : undefined;
     let promise: Promise<EditorSessionLoad>;
     try {
       // 文書の取得だけでなく検証・編集セッション化まで先に済ませ、クリック後の同期処理を減らす。
@@ -924,7 +923,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
       const currentSiteSettings = siteSettingsRef.current;
       const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
-        ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
+        ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version,
+          ...(currentSiteSettings.publishedVersion === undefined ? {} : { publishedVersion: currentSiteSettings.publishedVersion }),
+          ...(currentSiteSettings.publishedStyles === undefined ? {} : { publishedStyles: currentSiteSettings.publishedStyles }) } : undefined;
       const prefetched = pagePrefetches.current.get(key);
       const reusablePrefetch = prefetched && prefetched.blocks === blocks && prefetched.components === currentComponents &&
         (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS) ? prefetched : undefined;
@@ -1684,15 +1685,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !current.releases.some((release) => release.revision === revision))) return;
     setAssetResolveEpoch((value) => value + 1);
     const controller = new AbortController(); action.current = controller; setBusy("公開差分を取得中"); setNotice("");
-    const stylesVersion = current.publishedSiteStylesVersion, sitePublicationEpoch = current.sitePublicationEpoch;
-    if ((stylesVersion === undefined) !== (sitePublicationEpoch === undefined)) {
-      action.current = null; setBusy(""); setNotice("サイト共通スタイルの公開版を確認できません。ページを読み直してから再度お試しください。"); return;
-    }
     // 確認 token を、表示している部品ライブラリの version にも結び付ける。
     const input: EditorReleaseRequest = { target: current.target, expectedVersion: current.version, action: actionType,
       ...(actionType === "rollback" ? { revision } : {}), ...(components && libraryRef.current ? { componentsVersion: libraryRef.current.version } : {}),
-      ...(current.presentation ? { presentationVersion: current.presentation.version } : {}),
-      ...(stylesVersion === undefined ? {} : { siteStylesRevision: { stage: "published" as const, version: stylesVersion }, sitePublicationEpoch }) };
+      ...(current.presentation ? { presentationVersion: current.presentation.version } : {}) };
     try {
       const result = await adapter.prepareRelease(input, controller.signal);
       if (controller.signal.aborted) return;
@@ -1876,8 +1872,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     try {
       const settings = siteSettingsRef.current.settings;
       const fresh = editorSessionFrom(snapshot, current.target, blocks, library?.history.present, settings, !settings);
-      if (fresh.readOnly || (fresh.dependencyVersions.componentsVersion !== undefined && fresh.dependencyVersions.componentsVersion !== library?.version && fresh.dependencyVersions.componentsVersion !== current.dependencyVersions.componentsVersion)
-        || fresh.dependencyVersions.stylesVersion !== current.dependencyVersions.stylesVersion) return undefined;
+      if (fresh.readOnly || (fresh.dependencyVersions.componentsVersion !== undefined && fresh.dependencyVersions.componentsVersion !== library?.version && fresh.dependencyVersions.componentsVersion !== current.dependencyVersions.componentsVersion)) return undefined;
       const reviewed = reviewOperationConflict(current.operationQueue, fresh.history.present, current.history.present, operationApplier(blocks, fresh.locks, library?.history.present, settings));
       return reviewed ? { fresh, reviewed } : undefined;
     } catch { return undefined; }

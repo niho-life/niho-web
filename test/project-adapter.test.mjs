@@ -281,6 +281,22 @@ test("page changes and site settings are limited to the project site and re-vali
   assert.deepEqual(calls.settings, ["demo"]); assert.deepEqual(calls.settingsSaves, [{ siteId: "demo", settings: { title: "x", locale: "ja" }, expectedVersion: "s1" }]);
 });
 
+test("project adapter preserves shared style publication state and rename request", async () => {
+  const brand = { type: "color", value: "#123456" }, calls = { saves: [], publishes: [] };
+  const { wrapped } = setup({
+    readSiteSettings: async () => ({ settings: { title: "デモ", locale: "ja", tokens: { brand } }, version: "draft-1", publishedVersion: "published-1", publishedStyles: {} }),
+    saveSiteSettings: async (request) => { calls.saves.push(structuredClone(request)); return { status: "saved", version: "draft-2" }; },
+    publishSiteStyles: async (request) => { calls.publishes.push(structuredClone(request)); return { status: "published", version: "published-2", styles: { tokens: { primary: brand } } }; }
+  });
+  assert.deepEqual(await wrapped.readSiteSettings("demo", signal()), { settings: { title: "デモ", locale: "ja", tokens: { brand } }, version: "draft-1", publishedVersion: "published-1", publishedStyles: {} });
+  const styleRenames = [{ type: "rename", styleKind: "token", from: "brand", to: "primary" }];
+  await wrapped.saveSiteSettings({ siteId: "demo", expectedVersion: "draft-1", previousStyles: { tokens: { brand } }, styleRenames,
+    settings: { title: "デモ", locale: "ja", tokens: { primary: brand } } }, signal());
+  assert.deepEqual(calls.saves[0].styleRenames, styleRenames);
+  await wrapped.publishSiteStyles({ siteId: "demo", expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }, signal());
+  assert.deepEqual(calls.publishes, [{ siteId: "demo", expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }]);
+});
+
 const revisionEntry = { id: "rev_2", revision: 2, kind: "draft", createdAt: "2026-10-21T00:00:00.000Z", actor: "編集者" };
 const revisionMethods = (calls, overrides = {}) => ({
   listRevisions: async (request) => { calls.lists.push(structuredClone(request)); return { entries: [revisionEntry], next: "c2" }; },
