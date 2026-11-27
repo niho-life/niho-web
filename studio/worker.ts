@@ -31,10 +31,12 @@ import {
   EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
   editingLocalizationOperation, parseEditingLocalizationInput
 } from "../src/editing-localization.js";
+import { SITE_IMPORT_MAX_BYTES } from "../src/managed-site-import.js";
+import { managedSiteImport, managedSiteImportAsset } from "./managed-site-import.js";
 import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
   createManagedProject, managedCmsBoundPublic, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedActor, type ManagedPublicHtmlCache
+  managedProjectRegistrations, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, readJson as readManagedEditorJson, type ManagedActor, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
 import { publishedSiteRequest, resolvePublishedSiteHost } from "./managed-publication.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
@@ -3004,7 +3006,7 @@ async function managedCliPublicSettings(
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.styles\.(?:read|edit|publish)))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.styles\.(?:read|edit|publish)|site\.migration-import(?:\/[a-f0-9]{64})?|assets\.resolve))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -3029,6 +3031,24 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
+  if (version === "v2" && (operation === "site.migration-import" || operation?.startsWith("site.migration-import/"))) {
+    if (identity.kind !== "human" || accessToken === null) return json({ error: "forbidden" }, 403);
+    const asset = operation.split("/")[1];
+    if (!env.CMS_OBJECTS || request.method !== (asset ? "PUT" : "POST") || url.search) return json({ error: "invalid_request" }, 400);
+    const previewOrigin = publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN), store = cmsStore(env, identity);
+    try {
+      const input = asset ? null : await readManagedEditorJson(request, { subject: identity.subject, email: identity.email, cli: true }, SITE_IMPORT_MAX_BYTES);
+      if (!asset && !input) return json({ error: "invalid_import" }, 400);
+      const result = asset
+        ? await managedSiteImportAsset(store, siteId!, registration.project_id, identity.subject, previewOrigin, request, asset)
+        : await managedSiteImport(store, siteId!, registration.project_id, identity.subject, previewOrigin, input!);
+      return json(result, !("error" in result) ? 200 : result.error === "invalid_import" ? 400
+        : result.error === "verification_target_required" ? 403 : 409);
+    } catch (error) {
+      if (error instanceof DocumentValidationError) return json({ error: "invalid_import" }, 400);
+      throw error;
+    }
+  }
   const settings = /^site\.(seo|redirects|public)\.(read|save)$/u.exec(operation ?? "");
   const embed = /^pages\.embed-register\/([A-Za-z][A-Za-z0-9_-]{0,79})$/u.exec(operation ?? "");
   if (version === "v2" && (settings || embed)) {
@@ -3058,7 +3078,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
-  if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages.") || operation?.startsWith("site.styles."))) {
+  if (version === "v1" && (path === "capabilities" || operation === "assets.resolve" || operation?.startsWith("pages.") || operation?.startsWith("site.styles."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
       (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
     const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, publicSitesOrigin(env.PUBLIC_SITES_ORIGIN), {
