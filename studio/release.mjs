@@ -146,21 +146,25 @@ function savePreviousVersion(version) {
 }
 
 function smokeRequest(settings, request = fetch) {
-  return async function get(label, path, mime, publicPage = false) {
+  async function getResponse(label, path, publicPage = false) {
     const origin = publicPage ? settings.publicOrigin : settings.studioOrigin;
     const headers = { "Cache-Control": "no-cache" };
     if (!publicPage) headers["CF-Access-Token"] = settings.token;
     try {
-      const response = await request(`${origin}${path}`, { signal: AbortSignal.timeout(12_000), headers, redirect: "error" });
-      if (response.status !== 200) throw new ReleaseError(`${label} が HTTP ${response.status} を返しました。`);
-      const type = response.headers.get("Content-Type")?.toLowerCase().split(";")[0];
-      if (!mime.includes(type)) throw new ReleaseError(`${label} の Content-Type が正しくありません。`);
-      return Buffer.from(await response.arrayBuffer());
+      return await request(`${origin}${path}`, { signal: AbortSignal.timeout(12_000), headers, redirect: "error" });
     } catch (error) {
       if (error instanceof ReleaseError) throw error;
       throw new ReleaseError(`${label} へのリクエストが失敗しました。ネットワーク、Access、リダイレクトを確認してください。`);
     }
-  };
+  }
+  async function get(label, path, mime, publicPage = false) {
+    const response = await getResponse(label, path, publicPage);
+    if (response.status !== 200) throw new ReleaseError(`${label} が HTTP ${response.status} を返しました。`);
+    const type = response.headers.get("Content-Type")?.toLowerCase().split(";")[0];
+    if (!mime.includes(type)) throw new ReleaseError(`${label} の Content-Type が正しくありません。`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+  return { get, getResponse };
 }
 
 async function smokeDashboardApi(settings, get) {
@@ -178,23 +182,40 @@ async function smokeDashboardApi(settings, get) {
     const published = new URL(publishedUrl);
     if (published.origin === settings.publicOrigin) publishedSitePath = /^\/s\/[^/]+\//u.exec(published.pathname)?.[0] ?? "";
   } catch { /* unavailable or invalid URL */ }
-  if (dashboard.overview?.status !== "ready" || !configuredSitePath || publishedSitePath !== configuredSitePath) {
+  const unpublishedManagedSite = publishedUrl === null && dashboard.overview?.data?.publicationStatus === "unpublished"
+    && dashboard.overview?.data?.publishedPageCount === 0 && settings.publicPath === configuredSitePath;
+  const publishedManagedSite = dashboard.overview?.data?.publicationStatus === "published"
+    && Number.isSafeInteger(dashboard.overview?.data?.publishedPageCount) && dashboard.overview.data.publishedPageCount > 0
+    && publishedSitePath !== "" && publishedSitePath === configuredSitePath;
+  if (dashboard.overview?.status !== "ready" || !configuredSitePath || (!publishedManagedSite && !unpublishedManagedSite)) {
     throw new ReleaseError("Dashboard API の対象サイトと smoke の公開 path が一致しません。");
   }
-  return path;
+  return { path, published: publishedManagedSite };
 }
 
 export async function smokeStudio(settings, assets, request = fetch) {
-  const get = smokeRequest(settings, request);
-  const path = await smokeDashboardApi(settings, get);
+  const { get, getResponse } = smokeRequest(settings, request);
+  const { path, published } = await smokeDashboardApi(settings, get);
   const dashboard = await get("Dashboard HTML", path, ["text/html"]);
   if (entryScript.exec(dashboard.toString("utf8"))?.[1] !== assets.entry) throw new ReleaseError("Dashboard HTML が今回の配備の entry script を参照していません。");
   const scriptTypes = ["application/javascript", "text/javascript"];
   if (!(await get("Studio entry script", assets.entry, scriptTypes)).equals(assets.script)) throw new ReleaseError("Studio entry script が今回のビルドと一致しません。");
   if (!(await get("Dashboard の遅延読込 chunk", assets.chunkPath, scriptTypes)).equals(assets.chunk)) throw new ReleaseError("Dashboard の遅延読込 chunk が今回のビルドと一致しません。");
-  const page = await get("代表公開ページ", settings.publicPath, ["text/html"], true);
-  if (!page.toString("utf8").includes(`<meta property="og:url" content="${settings.publicOrigin}${settings.publicPath}"`)) {
-    throw new ReleaseError("代表公開ページの og:url が指定した公開 URL と一致しません。");
+  if (published) {
+    const page = await get("代表公開ページ", settings.publicPath, ["text/html"], true);
+    if (!page.toString("utf8").includes(`<meta property="og:url" content="${settings.publicOrigin}${settings.publicPath}"`)) {
+      throw new ReleaseError("代表公開ページの og:url が指定した公開 URL と一致しません。");
+    }
+  } else {
+    const response = await getResponse("未公開サイトの公開 path", settings.publicPath, true);
+    const headers = response.headers;
+    const body = await response.arrayBuffer();
+    if (response.status !== 404 || headers.get("Content-Type")?.toLowerCase().split(";")[0] !== "text/plain"
+      || headers.get("Cache-Control") !== "no-store" || headers.get("X-Content-Type-Options") !== "nosniff"
+      || headers.get("Cross-Origin-Resource-Policy") !== "same-origin" || headers.get("Referrer-Policy") !== "no-referrer"
+      || headers.get("X-Frame-Options") !== "DENY" || body.byteLength !== 0) {
+      throw new ReleaseError("未公開サイトの公開 path が安全な404を返しません。");
+    }
   }
 }
 
@@ -217,7 +238,7 @@ async function release() {
 
     checkExpiry(settings, 120);
     console.log("Access セッションと Dashboard の権限を確認");
-    await smokeDashboardApi(settings, smokeRequest(settings));
+    await smokeDashboardApi(settings, smokeRequest(settings).get);
     const list = () => pendingMigrations(wrangler("D1 の migration 状況を確認", "d1", "migrations", "list", "DB", "--remote"));
     const pending = list();
     if (pending.length) {

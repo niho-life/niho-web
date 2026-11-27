@@ -91,7 +91,7 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     assert.equal(options.headers["CF-Access-Token"], settings.token);
     if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
     if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
-      overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/example/` } }, members: { status: "ready" } });
+      overview: { status: "ready", data: { publicationStatus: "published", publishedPageCount: 1, publishedUrl: `${settings.publicOrigin}/s/example/` } }, members: { status: "ready" } });
     if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
     if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
     if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
@@ -109,6 +109,47 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     ? Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
       overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/other-site/` } }, members: { status: "ready" } })
     : request(url, options)), /公開 path が一致/u);
+});
+
+test("release smoke accepts an unpublished managed site only when its public path returns a safe 404", async () => {
+  const settings = readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token() });
+  const assets = {
+    entry: "/assets/app-aaaaaa111111.js", chunkPath: "/assets/chunks/project-dashboard-AAA11111.js",
+    script: Buffer.from("fixture entry"), chunk: Buffer.from("fixture chunk")
+  };
+  const path = `/projects/${settings.project}/sites/${settings.site}`;
+  const requests = [];
+  const ok = (body, type) => new Response(body, { headers: { "Content-Type": type } });
+  const safeNotFound = () => new Response(null, { status: 404, headers: {
+    "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8",
+    "Cross-Origin-Resource-Policy": "same-origin", "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"
+  } });
+  async function request(rawUrl, options) {
+    const url = new URL(rawUrl);
+    requests.push(url.pathname);
+    assert.equal(options.redirect, "error");
+    if (url.origin === settings.publicOrigin) {
+      assert.equal(options.headers["CF-Access-Token"], undefined);
+      assert.equal(url.pathname, settings.publicPath);
+      return safeNotFound();
+    }
+    assert.equal(url.origin, settings.studioOrigin);
+    assert.equal(options.headers["CF-Access-Token"], settings.token);
+    if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
+    if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
+      overview: { status: "ready", data: { publicationStatus: "unpublished", publishedPageCount: 0, publishedUrl: null } }, members: { status: "ready" } });
+    if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
+    if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
+    if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
+    assert.fail("Unexpected smoke request");
+  }
+  await smokeStudio(settings, assets, request);
+  assert.deepEqual(requests, ["/api/session", `/api${path}/dashboard`, path, assets.entry, assets.chunkPath, settings.publicPath]);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
+    ? new Response(null, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } }) : request(url, options)), /安全な404/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
+    ? ok("unexpected published page", "text/html") : request(url, options)), /安全な404/u);
 });
 
 test("Studio reports missing bindings and invalid settings on its first cron event", async (t) => {
