@@ -2942,7 +2942,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
   if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
       (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
-    const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, {
+    const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, publicSitesOrigin(env.PUBLIC_SITES_ORIGIN), {
       kind: identity.kind === "human" ? "human" : "machine", subject: actor.id, clientKind: "cli"
     }, async (capability) => {
       if (identity.kind === "human") return { subject: identity.subject, email: identity.email, cli: actor.cli };

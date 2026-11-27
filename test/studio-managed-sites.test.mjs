@@ -214,6 +214,22 @@ testWithD1("Studio-native site uses one page store for GUI, CAS, release history
   assert.deepEqual(editorRestored.document, restored.snapshot.document);
   assert.match(await (await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false })).text(), /<title>Fixture site<\/title>/u);
   assert.equal(h.sqlite.prepare("SELECT published_revision FROM managed_pages WHERE site_id = ? AND page_id = 'home'").get(siteId).published_revision, 4);
+  const history = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home/history`), 200);
+  assert.deepEqual(history.entries.map(({ revision, kind }) => [revision, kind]), [[4, "rollback"], [3, "publish"], [2, "publish"]]);
+  assert.equal(history.entries[0].id, "rev-4");
+  assert.deepEqual((await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/history-read`, { id: "rev-2" }), 200)).document, released2.snapshot.document);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/history-read`, { id: "rev-999" })).status, 404);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home/history?cursor=invalid`)).status, 400);
+  const pendingPlanCount = h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ?").get(siteId).count;
+  const directPublish = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { action: "publish" }), 200);
+  assert.equal(directPublish.status, "released");
+  assert.equal(directPublish.snapshot.document.revision, 4);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ?").get(siteId).count, pendingPlanCount);
+  const directRestore = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { action: "restore", revision: 2 }), 200);
+  assert.equal(directRestore.status, "released");
+  assert.deepEqual(directRestore.snapshot.document, { ...released2.snapshot.document, revision: 5 });
+  assert.equal(h.sqlite.prepare("SELECT published_revision FROM managed_pages WHERE site_id = ? AND page_id = 'home'").get(siteId).published_revision, 5);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { action: "restore", revision: 999 })).status, 409);
 
   // 同じpage-change operationで別ページを作る。公開前はpublic GETに出ない。
   const createChange = { action: "create", siteId, locale: "ja", title: "About", path: "/about" };
@@ -225,10 +241,11 @@ testWithD1("Studio-native site uses one page store for GUI, CAS, release history
   // plan後にmembershipを失ったactorは反映できず、失敗したplanは消費しない。再参加後だけ同じplanを安全に適用できる。
   const aboutTarget = { siteId, pageId: applied.page.pageId, locale: "ja" };
   const move = { action: "update", target: aboutTarget, title: "About", path: "/about-us" };
-  const draft = structuredClone(editorRestored.document);
+  const beforePageChange = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
+  const draft = structuredClone(beforePageChange.document);
   draft.body[0].children.find(({ id }) => id === "link").attrs.href = "/somewhere-else";
   draft.body[0].children.push({ type: "element", id: "draft-link", tag: "a", attrs: { href: `${PUBLIC_ORIGIN}/s/fixture-site/about?q=test#details` }, children: [{ type: "text", text: "Draft link" }] });
-  await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: editorRestored.version, document: draft }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: beforePageChange.version, document: draft }), 200);
   const movePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: move }), 200);
   const links = [{ pageId: "home", locale: "ja", title: "Fixture site", count: 2 }];
   assert.deepEqual(movePlan.impact.linkedFrom, links);
@@ -276,6 +293,7 @@ testWithD1("Managed page sources over 600 KiB save, publish, replay operations, 
   const document = { ...large, revision: saved.revision };
   assert.deepEqual((await body(await gui("GET"), 200)).document, document);
   assert.deepEqual((await body(await cli("GET", "read"), 200)).document, document);
+  assert.deepEqual((await body(await cli("POST", "history-read", { id: `rev-${saved.revision}` }), 200)).document, document);
   const version = h.sqlite.prepare(`SELECT document_json, document_key, document_digest, link_index_json
     FROM managed_page_versions WHERE site_id = ? AND page_id = 'home' AND revision = ?`);
   const row = version.get(siteId, saved.revision), source = h.objects.get(row.document_key);
@@ -388,6 +406,44 @@ testWithD1("Missing or modified R2 page sources fail closed without changing sta
   const artifact = await publishedSiteRequest(new Request(url), h.env);
   assert.equal(artifact.status, 200);
   assert.match(await artifact.text(), /<title>Verified page<\/title>/u);
+});
+
+testWithD1("Studio Editing API publishes one time and exposes the same revision history", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Direct publish", slug: "direct-publish", locale: "ja" }), 201);
+  const { siteId } = created, base = `/api/edit/v1/sites/${siteId}`;
+  const discovered = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/capabilities`), 200);
+  assert.ok(discovered.operations.some(({ id }) => id === "pages.publish"));
+  assert.ok(discovered.operations.some(({ id }) => id === "pages.history"));
+  const first = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.read/home?locale=ja`), 200);
+  const edited = { ...structuredClone(first.document), title: "One-step publish" };
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${base}/operations/pages.save/home?locale=ja`, { expectedVersion: first.version, document: edited }), 200);
+  const published = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "publish" }), 200);
+  assert.equal(published.status, "released");
+  assert.equal(published.snapshot.document.title, "One-step publish");
+  assert.equal(published.snapshot.editorState.releases[0].revision, saved.document.revision);
+  const publishedState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId);
+  assert.notEqual(publishedState.version, "initial");
+  assert.ok(publishedState.manifest_key && h.objects.has(publishedState.manifest_key));
+  const publicPage = await h.send(PUBLIC_ORIGIN, "GET", "/s/direct-publish/", undefined, { auth: false });
+  assert.equal(publicPage.status, 200);
+  assert.match(await publicPage.text(), /<title>One-step publish<\/title>/u);
+  const history = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.history/home?locale=ja`), 200);
+  assert.deepEqual(history.entries.map(({ kind }) => kind), ["publish"]);
+  assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.history-read/home?locale=ja`, { id: `rev-${saved.document.revision}` }), 200)).document.title, "One-step publish");
+  const restored = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "restore", revision: saved.document.revision }), 200);
+  assert.equal(restored.status, "released");
+  assert.equal(restored.snapshot.document.title, "One-step publish");
+  assert.equal(restored.snapshot.document.revision, saved.document.revision + 1);
+  const restoredState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId);
+  assert.notEqual(restoredState.version, publishedState.version);
+  assert.ok(restoredState.manifest_key && h.objects.has(restoredState.manifest_key));
+  const artifact = h.sqlite.prepare("SELECT artifact_key FROM managed_page_publications WHERE site_id = ? AND page_id = 'home' AND locale = 'ja'").get(siteId);
+  const publishedHtml = String(h.objects.get(artifact.artifact_key));
+  assert.match(publishedHtml, /<link rel="canonical" href="https:\/\/sites\.example\/s\/direct-publish\/">/u);
+  assert.match(publishedHtml, /property="og:url" content="https:\/\/sites\.example\/s\/direct-publish\/"/u);
+  assert.doesNotMatch(publishedHtml, /studio\.invalid/u);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "restore", revision: -1 })).status, 400);
 });
 
 testWithD1("Static publication serves immutable HTML and applies noindex to the verification host", async (t) => {

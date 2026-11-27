@@ -278,6 +278,44 @@ async function releases(db: ManagedD1, row: ManagedPageRow): Promise<readonly { 
   });
 }
 
+async function pageRevisionHistory(db: ManagedD1, row: ManagedPageRow, cursor?: string) {
+  const before = cursor === undefined ? null : /^rev-([1-9]\d{0,8})$/u.exec(cursor);
+  if (cursor !== undefined && !before) return null;
+  const result = await db.prepare(`
+    SELECT version.revision, version.kind, version.created_at,
+           (SELECT max(publication.created_at) FROM managed_page_publications AS publication
+             WHERE publication.site_id = version.site_id AND publication.page_id = version.page_id
+               AND publication.locale = version.locale AND publication.source_revision = version.revision) AS published_at
+      FROM managed_page_versions AS version
+     WHERE version.site_id = ?1 AND version.page_id = ?2 AND version.locale = ?3
+       AND (?4 IS NULL OR version.revision < ?4)
+     ORDER BY version.revision DESC LIMIT 51
+  `).bind(row.site_id, row.page_id, row.locale, before ? Number(before[1]) : null)
+    .all<{ revision: number; kind: "initial" | "save" | "restore"; created_at: number; published_at: number | null }>();
+  if (!result.success) throw new Error("managed page history query failed");
+  const entries = (result.results ?? []).slice(0, 50).map((entry) => ({
+    id: `rev-${entry.revision}`, revision: entry.revision,
+    kind: entry.kind === "restore" ? "rollback" as const : entry.published_at === null ? "draft" as const : "publish" as const,
+    createdAt: new Date((entry.published_at ?? entry.created_at) * 1000).toISOString(), actor: "スタッフ",
+    label: `版 ${entry.revision}`, snapshotAvailable: true
+  }));
+  const hasMore = (result.results?.length ?? 0) > 50;
+  const next = hasMore && entries.length ? `rev-${entries.at(-1)!.revision}` : undefined;
+  return { entries, ...(next ? { next } : {}) };
+}
+
+async function pageRevision(db: ManagedD1, row: ManagedPageRow, id: string, store?: CmsStore) {
+  const match = /^rev-([1-9]\d{0,8})$/u.exec(id);
+  if (!match) return null;
+  const version = await db.prepare(`SELECT site_id, page_id, locale, revision, document_json, document_key, document_digest
+    FROM managed_page_versions
+    WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND revision = ?4 LIMIT 1`)
+    .bind(row.site_id, row.page_id, row.locale, Number(match[1])).first<PageSourceRow>();
+  if (!version) return null;
+  const document = await readPageSource(store, version);
+  return { document };
+}
+
 async function snapshot(db: ManagedD1, row: ManagedPageRow, store?: CmsStore): Promise<Record<string, unknown>> {
   const document = await readPageSource(store, row);
   return { document, ...(row.bindings_json ? { cmsBindings: parseCmsPageBindings(JSON.parse(row.bindings_json), document) }
@@ -445,7 +483,7 @@ async function persistDraft(store: CmsStore, actor: ManagedActor, row: ManagedPa
   return { ...result, document: stored };
 }
 
-export function managedPageEditingApi(request: Request, store: CmsStore, projectId: string, siteId: string, editingActor: EditingActor,
+export function managedPageEditingApi(request: Request, store: CmsStore, projectId: string, siteId: string, publicOrigin: string | null, editingActor: EditingActor,
   actorFor: (capability: EditingCapability) => Promise<ManagedActor | null>): Promise<Response> {
   const db = store.db;
   let actor: ManagedActor | null = null;
@@ -455,7 +493,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
     pageCmsBindings: true,
     authenticate: async () => editingActor,
     async authorize(_editingActor, capability, scope) {
-      if (scope.siteId !== siteId || capability !== "pages.read" && capability !== "pages.edit") return false;
+      if (scope.siteId !== siteId || !["pages.read", "pages.edit", "pages.history.read", "pages.publish"].includes(capability)) return false;
       actor = await actorFor(capability);
       return actor !== null && !!await managedMemberRegistration(db, actor, projectId, siteId);
     },
@@ -463,7 +501,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       const row = await load(target);
       if (!row) return null;
       const document = await readPageSource(store, row);
-      return { document, version: row.current_version, ...(row.locale === row.cms_locale ? { cmsBindings: bindings(row, document) } : {}) };
+      return { document, version: row.current_version, editorState: { releases: await releases(db, row) }, ...(row.locale === row.cms_locale ? { cmsBindings: bindings(row, document) } : {}) };
     },
     async savePage(_editingActor, target, expectedVersion, submitted) {
       const row = await load(target);
@@ -473,6 +511,38 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       const saved = await persistDraft(store, actor, row, submitted, current, site);
       if (saved === "too_large") return { status: "invalid" };
       return saved ? { status: "saved", version: saved.version, document: saved.document } : { status: "conflict" };
+    },
+    async listPageHistory(_editingActor, target, cursor) {
+      const row = await load(target);
+      return row ? pageRevisionHistory(db, row, cursor) : null;
+    },
+    async readPageHistoryRevision(_editingActor, target, id) {
+      const row = await load(target);
+      return row ? pageRevision(db, row, id, store) : null;
+    },
+    async publishPageNow(_editingActor, target, input) {
+      if (!publicOrigin) throw new Error("managed public site origin unavailable");
+      if (!actor || target.siteId !== siteId || input.action === "restore" && (!Number.isSafeInteger(input.revision) || input.revision! < 1)
+        || input.action === "publish" && input.revision !== undefined) return { status: "conflict" };
+      const row = await load(target);
+      if (!row) return { status: "conflict" };
+      const headers = new Headers({ "Content-Type": "application/json" });
+      if (!actor.cli) { headers.set("Origin", "https://studio.invalid"); headers.set("Sec-Fetch-Site", "same-origin"); }
+      const url = `https://studio.invalid/sites/${encodeURIComponent(siteId)}/operations/pages.publish/${encodeURIComponent(target.pageId)}?locale=${encodeURIComponent(target.locale)}`;
+      const response = await publishPageOnce(new Request(url, { method: "POST", headers, body: JSON.stringify(input) }), db, actor, row, publicOrigin, store);
+      if (response.status === 409) return { status: "conflict" };
+      if (!response.ok) throw new Error("managed direct publish failed");
+      const body = record(await response.json());
+      if (!body) throw new Error("managed direct publish response invalid");
+      const rawSnapshot = record(body.snapshot);
+      const document = rawSnapshot ? record(rawSnapshot.document) : null;
+      if (body.status !== "released" || !rawSnapshot || !document || typeof rawSnapshot.version !== "string"
+        || document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new Error("managed direct publish response invalid");
+      const refreshed = await load(target);
+      if (!refreshed) throw new Error("managed direct publish snapshot unavailable");
+      return { status: "released", snapshot: { document: document as unknown as PageDocument, version: rawSnapshot.version,
+        editorState: { releases: await releases(db, refreshed) },
+        ...(rawSnapshot.cmsBindings === null ? { cmsBindings: null } : {}) } };
     },
     pageOperations: { async transact(actorIdentity, target, transaction) {
       const { operationId, inputHash, dryRun } = transaction;
@@ -706,6 +776,25 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
   return json({ status: "released", snapshot: await snapshot(db, refreshed, store) });
 }
 
+async function publishPageOnce(request: Request, db: ManagedD1, actor: ManagedActor, row: ManagedPageRow, origin: string, store?: CmsStore): Promise<Response> {
+  const body = await readJson(request, actor, MAX_MUTATION_BODY);
+  if (!body || body.action !== "publish" && body.action !== "restore"
+    || !exactKeys(body, body.action === "restore" ? ["action", "revision"] : ["action"])
+    || body.action === "restore" && (!Number.isSafeInteger(body.revision) || Number(body.revision) < 1)) return json({ error: "invalid_request" }, 400);
+  const action = body.action === "restore" ? "rollback" : "publish";
+  const input = { target: { siteId: row.site_id, pageId: row.page_id, locale: row.locale }, expectedVersion: row.current_version,
+    action, ...(action === "rollback" ? { revision: Number(body.revision) } : {}) };
+  const url = new URL(request.url), headers = new Headers({ "Content-Type": "application/json" });
+  if (!actor.cli) { headers.set("Origin", url.origin); headers.set("Sec-Fetch-Site", "same-origin"); }
+  const prepared = await prepareRelease(new Request(request.url, { method: "POST", headers, body: JSON.stringify(input) }), db, actor, row, origin, store);
+  if (!prepared.ok) return prepared;
+  const plan = record(await prepared.json());
+  if (!plan || typeof plan.confirmationToken !== "string") return json({ error: "host_contract_violation" }, 502);
+  const committed = await applyRelease(new Request(request.url, { method: "POST", headers,
+    body: JSON.stringify({ expectedVersion: row.current_version, confirmationToken: plan.confirmationToken }) }), db, actor, row, origin, store);
+  return committed;
+}
+
 function changeOperation(change: EditorPageChange): StoredPlan["operation"] {
   return change.action === "create" ? "page.create" : change.action === "update" ? "page.update" : "page.visibility";
 }
@@ -855,7 +944,7 @@ export async function managedEditorOperation(
   }
   if (action === "/editor/page-changes/prepare") return request.method === "POST" ? preparePageChange(request, db, actor, projectId, siteId, origin) : json({ error: "method_not_allowed" }, 405);
   if (action === "/editor/page-changes/apply") return request.method === "POST" ? applyPageChange(request, db, actor, projectId, siteId, store) : json({ error: "method_not_allowed" }, 405);
-  const match = /^\/editor\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/draft|\/release-plan|\/release|\/cms-bindings|\/cms-preview-plan|\/cms-preview)?$/u.exec(action);
+  const match = /^\/editor\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/draft|\/release-plan|\/release|\/publish|\/history|\/history-read|\/cms-bindings|\/cms-preview-plan|\/cms-preview)?$/u.exec(action);
   if (!match) return json({ error: "not_found" }, 404);
   const row = await pageRow(db, actor, projectId, siteId, match[1]!);
   if (!row) return json({ error: "forbidden" }, 403);
@@ -863,6 +952,21 @@ export async function managedEditorOperation(
   if (match[2] === "/draft") return request.method === "PUT" ? saveDraft(request, actor, row, store) : json({ error: "method_not_allowed" }, 405);
   if (match[2] === "/release-plan") return request.method === "POST" ? prepareRelease(request, db, actor, row, origin, store) : json({ error: "method_not_allowed" }, 405);
   if (match[2] === "/release") return request.method === "POST" ? applyRelease(request, db, actor, row, origin, store) : json({ error: "method_not_allowed" }, 405);
+  if (match[2] === "/publish") return request.method === "POST" ? publishPageOnce(request, db, actor, row, origin, store) : json({ error: "method_not_allowed" }, 405);
+  if (match[2] === "/history") {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    const url = new URL(request.url), cursorValues = url.searchParams.getAll("cursor");
+    if ([...url.searchParams.keys()].some((key) => key !== "cursor") || cursorValues.length > 1) return json({ error: "invalid_request" }, 400);
+    const history = await pageRevisionHistory(db, row, cursorValues[0]);
+    return history ? json(history) : json({ error: "invalid_request" }, 400);
+  }
+  if (match[2] === "/history-read") {
+    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+    const body = await readJson(request, actor, 8 * 1024);
+    if (!body || !exactKeys(body, ["id"]) || typeof body.id !== "string") return json({ error: "invalid_request" }, 400);
+    const history = await pageRevision(db, row, body.id, store);
+    return history ? json(history) : json({ error: "not_found" }, 404);
+  }
   const site = await cmsSite(store, actor, row);
   if (!store || !site) return json({ error: "not_found" }, 404);
   if (match[2] === "/cms-bindings") return request.method === "GET" ? cmsBindingOptions(store, site) : json({ error: "method_not_allowed" }, 405);

@@ -53,6 +53,12 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
         const result = { status: "released", operationId: request.operationId, version, document };
         completedOperations.set(request.operationId, { expectedVersion: request.expectedVersion, confirmationToken: request.confirmationToken, result });
         return result;
+      },
+      async publishPageNow(_actor, input, request) {
+        if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale
+          || request.action !== "publish" && request.action !== "restore") return { status: "conflict" };
+        version = `v${Number(version.slice(1)) + 1}`;
+        return { status: "released", snapshot: { document, version } };
       }
     } : {})
   }, apiOptions);
@@ -429,6 +435,10 @@ test("trusted page storage validates a save once and skips revalidation on read 
     expectedVersion: "v2", confirmationToken: plan.body.plan.confirmationToken, operationId: "123e4567-e89b-42d3-a456-426614174000"
   }));
   assert.equal(published.status, 200);
+  assert.equal(blockContextReads, 1);
+
+  const oneStep = await json(await send("POST", `${route}/pages.publish/${target.pageId}${query}`, { action: "publish" }));
+  assert.equal(oneStep.status, 200);
   assert.equal(blockContextReads, 1);
 });
 

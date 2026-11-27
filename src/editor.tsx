@@ -1557,9 +1557,21 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   async function prepare(actionType: "publish" | "rollback", revision = Number(rollbackRevision)) {
     if (siteSettings.dirty || siteSettings.busy) { setNotice("サイト設定を保存してから公開内容を確認してください。"); return; }
     const current = sessionRef.current, site = sites.find((site) => site.id === current?.target.siteId);
-    if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !current.releases.some((release) => release.revision === revision))) return;
+    if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !adapter.publishPageNow && !current.releases.some((release) => release.revision === revision))) return;
     setAssetResolveEpoch((value) => value + 1);
-    const controller = new AbortController(); action.current = controller; setBusy("公開差分を取得中"); setNotice("");
+    const controller = new AbortController(); action.current = controller; setBusy(adapter.publishPageNow ? "公開中" : "公開差分を取得中"); setNotice("");
+    if (adapter.publishPageNow) {
+      try {
+        const result = await adapter.publishPageNow({ target: current.target, action: actionType === "rollback" ? "restore" : "publish", ...(actionType === "rollback" ? { revision } : {}) }, controller.signal);
+        if (controller.signal.aborted) return;
+        if (result.status === "conflict") { setNotice("保存済みの状態が変わりました（409）。最新状態を読み込んでからやり直してください。手元の編集内容は保持しています。"); return; }
+        replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings));
+        setSelection(null); setFieldEpoch((value) => value + 1); setProblem(null); setPicker(null);
+        setNotice(actionType === "rollback" ? "選んだ版を公開先へ復元しました。" : "公開しました。");
+      } catch { if (!controller.signal.aborted) setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); }
+      finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
+      return;
+    }
     // 確認 token を、表示している部品ライブラリの version にも結び付ける。
     const input: EditorReleaseRequest = { target: current.target, expectedVersion: current.version, action: actionType,
       ...(actionType === "rollback" ? { revision } : {}), ...(components && libraryRef.current ? { componentsVersion: libraryRef.current.version } : {}),
@@ -2364,7 +2376,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });
   const recoveryStale = !!recoveryState.offer && !!session && recoveryState.offer.baseVersion !== session.version;
-  const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback") && session?.releases.some((release) => release.revision === viewed.revision) ? viewed.revision : undefined;
+  const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback")
+    && (adapter.publishPageNow || session?.releases.some((release) => release.revision === viewed.revision)) ? viewed.revision : undefined;
   const activeHistory = masterId ? library?.history : session?.history;
   const publishHold = siteSettings.dirty || siteSettings.busy ? "サイト設定を保存してから公開を確認してください。" : libraryDirty ? "コンポーネントの変更を保存してから公開を確認してください。" : masterId ? "ページに戻ってから公開を確認してください。" : session?.hasSavedDraft === false ? "文字や画像を編集し、下書きを保存してから公開・復元を確認してください。" : undefined;
   const rawSelected = document && selection ? nodeAt(document, selection) : undefined;
@@ -2562,7 +2575,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {libraryRecovery.offer && libraryMerge && <LibraryRecoveryBanner offer={libraryRecovery.offer} merge={libraryMerge} disabled={libraryBlocked || libraryDirty || hasInput || !!masterId} restore={restoreLibrary} discard={libraryRecovery.discard} />}
       {recoveryState.offer && session && !session.readOnly && <RecoveryBanner offer={recoveryState.offer} stale={recoveryStale} disabled={!localizationReady || historyMode || (blocked && busy !== "保存中") || !!masterId} compare={() => setRecoveryCompare(true)}
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
-      <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
+      <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} {...(adapter.publishPageNow ? { rollbackLabel: "この版を公開先へ復元" } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
 {document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas pageKey={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })}
         spacing={{ allowed: spacingAllowed, commit: (path, property, value) => applyStyle(until === undefined

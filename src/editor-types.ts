@@ -226,6 +226,8 @@ export interface EditorAdapter {
   applyOperations?(request: EditorApplyOperationsRequest, signal: AbortSignal): Promise<EditorApplyOperationsResult>;
   prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
   release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  /** Studio 内サイト用。保存済みの現行下書きの公開、または履歴版の復元を1回の要求で行う。 */
+  publishPageNow?(request: { target: EditorTarget; action: "publish" | "restore"; revision?: number }, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
   prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
   releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;
