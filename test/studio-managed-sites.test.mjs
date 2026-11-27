@@ -877,6 +877,9 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   const restoredState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId);
   assert.notEqual(restoredState.version, publishedState.version);
   assert.ok(restoredState.manifest_key && h.objects.has(restoredState.manifest_key));
+  const restoredSitemap = await publishedSiteRequest(new Request("https://sites.example/s/direct-publish/sitemap.xml"), h.env);
+  assert.equal(restoredSitemap.status, 200, "restoring a page keeps the manifest revision aligned with the publication row");
+  assert.match(await restoredSitemap.text(), /https:\/\/sites\.example\/s\/direct-publish\//u);
   const artifact = h.sqlite.prepare("SELECT artifact_key FROM managed_page_publications WHERE site_id = ? AND page_id = 'home' AND locale = 'ja'").get(siteId);
   const publishedHtml = String(h.objects.get(artifact.artifact_key));
   assert.match(publishedHtml, /<link rel="canonical" href="https:\/\/sites\.example\/s\/direct-publish\/">/u);
@@ -935,6 +938,22 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.match(await publicSitemap.text(), /https:\/\/sites\.example\/s\/static-fixture\//u);
   assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms.txt"), h.env)).text(), /# Static fixture/u);
   assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms-full.txt"), h.env)).text(), /About/u);
+  h.sqlite.prepare("INSERT INTO managed_site_hosts (hostname, path_prefix, site_id, noindex) VALUES (?, '', ?, 1)")
+    .run("private.sites.example", created.siteId);
+  for (const path of ["/sitemap.xml", "/llms.txt", "/llms-full.txt"]) {
+    const hiddenDiscovery = await publishedSiteRequest(new Request(`https://private.sites.example${path}`), h.env);
+    assert.equal(hiddenDiscovery.status, 200);
+    assert.equal(hiddenDiscovery.headers.get("X-Robots-Tag"), "noindex, nofollow");
+    const body = await hiddenDiscovery.text();
+    const etag = hiddenDiscovery.headers.get("ETag");
+    assert.ok(etag);
+    assert.doesNotMatch(body, /sites\.example|Static fixture|About/u, "a noindex host must not disclose URL or page text");
+    assert.equal(etag, `"${createHash("sha256").update(body).digest("hex")}"`);
+    assert.equal((await publishedSiteRequest(new Request(`https://private.sites.example${path}`, {
+      headers: { "If-None-Match": etag }
+    }), h.env)).status, 304);
+  }
+  assert.match(await (await publishedSiteRequest(new Request("https://private.sites.example/robots.txt"), h.env)).text(), /Disallow: \/\n/u);
   // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run("preview.sites.example", created.siteId);

@@ -1049,7 +1049,7 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
         activeRouteKeys.push({ pageId: row.page_id, locale: row.locale });
       }
       prepared = await preparePublishedSite({ bucket: store.bucket, siteId: row.site_id, publicationId, pageId: row.page_id,
-        locale: row.locale, path: row.path, sourceRevision: Number(payload.sourceRevision), html,
+        locale: row.locale, path: row.path, sourceRevision: revision, html,
         contentSecurityPolicy: runtime.csp, embeds: embeds.map(({ refId, src }) => ({ refId, src: src.href })),
         title: rendered.title, description: metadata.description ?? "",
         text: pageText(rendered.body).slice(0, 40_000).replace(/[\uD800-\uDBFF]$/u, ""), noindex: metadata.robots === "noindex, nofollow",

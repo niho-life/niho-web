@@ -531,15 +531,17 @@ async function publishedDiscovery(request: Request, env: PublicEnv, path: string
   const headers = path === "/sitemap.xml" ? xmlHeader(responseNoindex) : noindexHeader(responseNoindex);
   if (path !== "/sitemap.xml") headers.set("Content-Type", "text/plain; charset=utf-8");
   headers.set("Cache-Control", "no-cache");
-  const etag = `"${file.digest}"`;
-  headers.set("ETag", etag);
-  if (path === "/robots.txt" && responseNoindex) {
-    const body = "User-agent: *\nDisallow: /\n";
-    const robotsEtag = `"${await sha256Text(body)}"`;
-    headers.set("ETag", robotsEtag);
-    const notModified = etagMatches(request.headers.get("If-None-Match"), robotsEtag);
+  if (responseNoindex) {
+    const body = path === "/sitemap.xml"
+      ? `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"></urlset>`
+      : path === "/robots.txt" ? "User-agent: *\nDisallow: /\n" : "";
+    const emptyEtag = `"${await sha256Text(body)}"`;
+    headers.set("ETag", emptyEtag);
+    const notModified = etagMatches(request.headers.get("If-None-Match"), emptyEtag);
     return new Response(request.method === "HEAD" || notModified ? null : body, { status: notModified ? 304 : 200, headers });
   }
+  const etag = `"${file.digest}"`;
+  headers.set("ETag", etag);
   const notModified = etagMatches(request.headers.get("If-None-Match"), etag);
   if (notModified) return new Response(null, { status: 304, headers });
   if (request.method === "HEAD") return new Response(null, { status: 200, headers });
