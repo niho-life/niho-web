@@ -26,6 +26,7 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
     if (init.redirect !== "manual" || init.credentials !== "omit") throw new Error("unsafe API fetch defaults");
     const headers = new Headers(init.headers);
+    if (headers.get("User-Agent") !== "niho-edit/0.1.0") throw new Error("missing CLI user agent");
     if (headers.get("Authorization") !== ${JSON.stringify(studio ? null : "Bearer fixture-token")}) throw new Error("missing authorization");
     if (headers.get("cf-access-token") !== ${JSON.stringify(studio && !accessClientId ? token : null)}) throw new Error("unexpected Access token");
     if (headers.get("X-Studio-CMS-Version") !== ${JSON.stringify(studio ? "2" : null)}) throw new Error("unexpected CMS version");
@@ -61,6 +62,7 @@ async function runSequence(args, requests, { env = {}, token = "fixture-token", 
     "  if (!request || String(url) !== request.url || init.method !== request.method) throw new Error('unexpected request');",
     "  if (init.redirect !== 'manual' || init.credentials !== 'omit') throw new Error('unsafe API fetch defaults');",
     "  const headers = new Headers(init.headers);",
+    "  if (headers.get('User-Agent') !== 'niho-edit/0.1.0') throw new Error('missing CLI user agent');",
     "  if (headers.get('Authorization') !== " + JSON.stringify(studio ? null : "Bearer fixture-token") + ") throw new Error('unexpected authorization');",
     "  if (headers.get('cf-access-token') !== " + JSON.stringify(studio ? "fixture-token" : null) + ") throw new Error('unexpected Access token');",
     "  if (headers.get('X-Studio-CMS-Version') !== " + JSON.stringify(studio ? "2" : null) + ") throw new Error('unexpected Studio CMS version');",
@@ -100,6 +102,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", tr
       if (calls === 1) {
         if (String(url) !== ${JSON.stringify(`${origin}/api/edit/v1/sites/${siteId}/operations/assets.upload-intent`)} || init.method !== "POST") throw new Error("unexpected intent request");
         const headers = new Headers(init.headers);
+        if (headers.get("User-Agent") !== "niho-edit/0.1.0") throw new Error("missing CLI user agent");
         if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
         if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("missing API Access credentials");
         const body = JSON.parse(init.body);
@@ -108,6 +111,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", tr
       }
       if (calls !== 2 || String(url) !== ${JSON.stringify(uploadUrl)} || init.method !== "PUT" || init.credentials !== "omit" || init.redirect !== "error") throw new Error("unexpected upload PUT");
       const headers = new Headers(init.headers);
+      if (headers.get("User-Agent") !== "niho-edit/0.1.0") throw new Error("missing CLI user agent");
       if (headers.get("Authorization") !== "Bearer short-lived" || headers.get("Content-Type") !== "image/png") throw new Error("unsafe upload headers");
       const sameOriginAccess = new URL(${JSON.stringify(uploadUrl)}).origin === ${JSON.stringify(origin)};
       if (headers.get("CF-Access-Client-Id") !== (sameOriginAccess ? ${JSON.stringify(accessClientId)} : null)

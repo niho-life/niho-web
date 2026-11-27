@@ -24,6 +24,7 @@ import { NIHO_EDIT_USAGE as USAGE } from "./niho-edit-usage.mjs";
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
 const MAX_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
+const CLI_USER_AGENT = "niho-edit/0.1.0";
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
 const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -416,7 +417,7 @@ async function runLocalization(client, operation, values, positionals) {
     let response;
     try {
       response = await fetch(url, { method: "POST", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
-        headers: { "Content-Type": "application/json", ...(values.studio ? {
+        headers: { "User-Agent": CLI_USER_AGENT, "Content-Type": "application/json", ...(values.studio ? {
           "X-Studio-CMS-Version": "2",
           ...(process.env.CF_ACCESS_CLIENT_ID && process.env.CF_ACCESS_CLIENT_SECRET
             ? { "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET }
@@ -620,8 +621,8 @@ async function main() {
   }
   const authorizationHeaders = { Authorization: `Bearer ${token}`, ...accessHeaders };
   const headers = values.studio ? {
-    "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
-  } : { Authorization: `Bearer ${token}`, ...accessHeaders };
+    "User-Agent": CLI_USER_AGENT, "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
+  } : { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
 
   if (command === "normalize") {
@@ -811,7 +812,7 @@ async function main() {
     let uploaded;
     try {
       const response = await fetch(intent.uploadUrl, { method: "PUT", credentials: "omit", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(120_000),
-        headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType,
+        headers: { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType,
           ...(uploadUrl.origin === baseOrigin ? accessHeaders : {}) }, body: new Uint8Array(bytes) });
       if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new CliError("upload_rejected", response.status);
       const body = await response.json();
