@@ -8,6 +8,8 @@ export type SitePresentationOptions = {
   interactive?: boolean;
   /** trusted host code が所有する、親documentとは別originの固定X投稿frame endpoint。 */
   xPostFrameUrl?: string;
+  /** 親の CSP が srcdoc 内の script を許可しない公開ページで使用する。 */
+  externalInstagramFrame?: boolean;
 };
 
 function escapeEmbedAttribute(value: string): string {
@@ -204,9 +206,11 @@ export function initializeSitePresentation(scope: ParentNode = document, options
         const source = new URL(xPostFrameEndpoint!.href);
         source.searchParams.set("url", binding.source);
         frame.src = source.href;
+      } else if (options.externalInstagramFrame) {
+        frame.src = `${binding.source}embed/`;
       } else frame.srcdoc = instagramSrcDoc(binding.source);
       frame.title = binding.title;
-      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", binding.provider === "x" ? "allow-scripts allow-same-origin" : "allow-scripts");
+      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", binding.provider === "x" || options.externalInstagramFrame ? "allow-scripts allow-same-origin" : "allow-scripts");
       frame.setAttribute(`data-nw-${binding.provider}-frame`, "");
       frame.style.gridArea = "1 / 1"; frame.style.width = "100%"; frame.style.height = "100%"; frame.style.border = "0"; frame.style.display = "block";
       if (binding.mount.closest("[data-nw-social-canvas]")) frame.style.pointerEvents = "none";

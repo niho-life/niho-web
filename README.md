@@ -19,6 +19,7 @@ Node.js 22 以上を使います。
 | @niho/web/normalize | 文書の正規化 |
 | @niho/web/editing-api | ページ・版履歴・1操作公開・サイト共通スタイルの共通編集 wire 契約 |
 | @niho/web/editing-client | GUI / `niho-edit` 共通の編集 API client と条件付き読取 |
+| niho-edit --studio | Studio-native site の版付きSEO設定をJSONで読み書き |
 | @niho/web/react | React renderer |
 | @niho/web/presentation-runtime | 公開ページの対話機能 |
 | @niho/web/server | HTML 描画 |
@@ -46,6 +47,6 @@ Node.js 22 以上を使います。
 - **利用開始:** [AI編集手順](docs/ai-editing-guide.md)、[niho-edit の操作](docs/studio-cli.md)
 - **描画と編集:** [文書契約](docs/document-contract.md)、[編集 API](docs/editing-api-contract.md)、[エディターのホスト契約](docs/editor-contract.md)、[編集画面の説明](docs/editor-ui-contract.md)
 - **サイト機能:** [素材](docs/asset-contract.md)、[CMS](docs/cms-v2-contract.md)、[翻訳](docs/localization-contract.md)、[保存と版履歴](docs/save-history-contract.md)、[サイト共通スタイル](docs/site-styles-contract.md)、[公開生成物と配信](docs/site-publication-contract.md)
-- **Studio の運用:** [`npm run studio:release` による配備、smoke、切り戻し](studio/README.md)、[Studio Preview の直接アップロード](docs/studio-preview.md)
+- **Studio の運用:** [`npm run studio:release` による配備、smoke、切り戻し](studio/README.md)、[Studio Preview の直接アップロード](docs/studio-preview.md)、[公開配信](docs/studio-managed-sites.md)、[埋め込み契約](docs/managed-embed-contract.md)、[鎌倉専用ブロックの移行](docs/kamakura-block-migration.md)
 
 公開リポジトリですが、第三者による再利用ライセンスはありません。詳しくは package.json の license を参照してください。

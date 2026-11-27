@@ -17,7 +17,15 @@ const entryScript = /<script type="module" src="(\/assets\/app-[a-f0-9]{12}\.js)
 const dashboardImport = /import\("\.\/(chunks\/project-dashboard-[A-Za-z0-9_-]{8}\.js)"\)/u;
 const requiredSecrets = ["KAMAKURA_STUDIO_BRIDGE_SECRET"];
 // List each migration checked against the old Worker's reads and writes before enabling it here.
-const beforeDeployMigrations = new Set(["0015_cms_delivery.sql", "0016_static_page_publication.sql", "0017_managed_page_sources.sql"]);
+const beforeDeployMigrations = new Set([
+  "0015_cms_delivery.sql",
+  "0016_static_page_publication.sql",
+  "0017_managed_page_sources.sql",
+  "0018_managed_public_embeds.sql",
+  "0019_managed_public_domains.sql",
+  "0020_managed_site_redirects.sql",
+  "0021_managed_published_paths.sql"
+]);
 
 class ReleaseError extends Error {}
 

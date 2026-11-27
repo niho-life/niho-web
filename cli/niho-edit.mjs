@@ -14,6 +14,7 @@ import { editDocumentById } from "../dist/editor-model.js";
 import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pageOperationUsesNodeNames, parsePageOperation } from "../dist/editing-page-operations.js";
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
+import { parseManagedSiteSeoSettings } from "../dist/managed-seo-settings.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
 import { OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "../dist/studio-cli-auth.js";
 import { MANAGED_CMS_EXTRA_OPERATIONS } from "../dist/managed-cms-operations.js";
@@ -245,6 +246,18 @@ async function inputBreakpointSnapshot(path) {
   if (Object.keys(source).sort().join(",") !== "settings,version" || !isEditingApiVersion(source.version)) throw new CliError("invalid_settings_snapshot");
   let settings;
   try { settings = parseBreakpointSettings(source.settings); } catch { throw new CliError("invalid_settings_snapshot"); }
+  return { settings, version: source.version };
+}
+async function inputSiteSeoSnapshot(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 64 * 1024) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJson(path === "-" ? process.stdin : createReadStream(path), 64 * 1024);
+  if (Object.keys(source).sort().join(",") !== "settings,version" || !isEditingApiVersion(source.version)) throw new CliError("invalid_seo_settings_snapshot");
+  const settings = parseManagedSiteSeoSettings(source.settings);
+  if (!settings) throw new CliError("invalid_seo_settings_snapshot");
   return { settings, version: source.version };
 }
 async function inputPageManagementJson(path, maximumBytes) {
@@ -592,7 +605,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "normalize", "lint"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "normalize", "lint", "site-seo-read", "site-seo-save"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -615,6 +628,26 @@ async function main() {
     "User-Agent": CLI_USER_AGENT, "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
   } : { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
+
+  if (command === "site-seo-read" || command === "site-seo-save") {
+    const saving = command === "site-seo-save";
+    assertCommandOptions(values, saving ? ["json"] : []);
+    if (!values.studio || pageId !== undefined || extra.length || saving && !values.json) throw new CliError("invalid_arguments");
+    const snapshot = saving ? await inputSiteSeoSnapshot(values.json) : undefined;
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/site.seo.${saving ? "save" : "read"}`, {
+        method: saving ? "PUT" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(saving ? { "Content-Type": "application/json" } : {}) },
+        ...(snapshot ? { body: JSON.stringify({ expectedVersion: snapshot.version, settings: snapshot.settings }) } : {})
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 64 * 1024);
+    if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
+    emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.seo.save" : "site.seo.read");
+    return;
+  }
 
   if (command === "normalize") {
     await runNormalization(pageId, values, client, { origin: baseOrigin, siteId: values.site, studio: values.studio === true });

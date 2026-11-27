@@ -5,7 +5,7 @@ import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
 import { renameSiteStyle, type EditingSiteStyleKind, type EditingSiteStylesRename } from "./editing-site-styles.js";
 import { Dialog } from "./editor-dialog.js";
 import { pageChangeProblems, sameTarget, validatePageChangePlan, type EditorOperation } from "./editor-model.js";
-import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorTarget } from "./editor-types.js";
+import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleaseWarning, EditorSite, EditorTarget } from "./editor-types.js";
 import { resolvedAsset, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { coverAlt, socialImageProblem } from "./editor-assets.js";
 import { buildPageTree, findPathConflict, pageUrl, parseSiteSettings, resolvePageMetadata, validatePagePath, type PageMetadata, type PageTreeNode, type PageVisibility, type SiteSettings } from "./pages.js";
@@ -582,7 +582,7 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
 }
 
 /** 公開確認に添える公開URLと、検索結果に出る情報。rollback は戻す版の内容が手元に無いため URL だけを出す。url は検証済み plan の値を優先する。 */
-export function ReleaseSearchSummary({ document, page, domain, settings, rollback, url }: { document: PageDocument | undefined; page: EditorPage | undefined; domain: string; settings: SiteSettings | undefined; rollback: boolean; url?: string | undefined }) {
+export function ReleaseSearchSummary({ document, page, domain, settings, rollback, url, warnings = [] }: { document: PageDocument | undefined; page: EditorPage | undefined; domain: string; settings: SiteSettings | undefined; rollback: boolean; url?: string | undefined; warnings?: readonly EditorReleaseWarning[] }) {
   if (!document) return null;
   const path = publicPath(page), metadata = rollback ? undefined : metadataFor(document, page, domain, settings), shown = url ?? (path ? pageUrl(domain, path) : undefined);
   return <>
@@ -592,5 +592,6 @@ export function ReleaseSearchSummary({ document, page, domain, settings, rollbac
       <div><dt>説明文</dt><dd>{metadata.description ?? "（なし）"}</dd></div>
       <div><dt>検索エンジン</dt><dd>{metadata.robots === "index, follow" ? "表示する" : "表示しない（noindex）"}</dd></div>
     </dl></div>}
+    {warnings.length > 0 && <div className="e-release-seo" role="note"><p>公開後に確認する項目</p><ul>{warnings.map(({ code, message }, index) => <li key={`${code}-${index}`}>{message}</li>)}</ul></div>}
   </>;
 }

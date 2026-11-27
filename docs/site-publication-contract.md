@@ -9,7 +9,9 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 - `managed_page_publications` に HTML key、digest、manifest key、path、Content-Type、CSP を保存します。読み出し時はmanifest・publication・現在のページpointerの対応と、HTML digestを照合します。
 - `managed_site_hosts` は hostname と path prefix を site に結び付けます。verification host には `noindex=1` を保存し、200・304・307・404・503 の全応答に `X-Robots-Tag: noindex, nofollow` を付けます。
 - HTML は `Cache-Control: no-cache` と digest の ETag を返します。検証hostもETag再検証を使います。
+- 公開 Worker は host 対応表と公開 manifest pointer を isolate 内で最大5秒保持します。返却前にはD1で現在のmanifest pointer・公開page・visibility・host登録を照合します。HTML artifactはhost origin・site ID・manifest publication ID・本文digestを含むCache API keyで再利用し、NIHO接続先の解決応答はcacheしません。
 - `studio/public-sites.wrangler.json` が公開 Worker の entry point です。Studio と同じ D1/R2 bindings を読みます。Worker のコードにはD1/R2書込み操作を置きません。Cloudflare binding自体のread-only権限は別途強制できません。
+- `studio:build` は公開 Worker 用 `dist/public-sites` に `/_niho/` の hash 付きランタイムだけを生成します。公開 Worker はそのパスの許可形式だけを静的 asset binding 経由で返します。Studio の dashboard asset は公開配信用 directory に入りません。
 
 `PUBLIC_SITES_PREVIEW_ORIGIN` を Studio Worker に設定すると、新規 managed site の hostname/path prefix が `noindex=1` で登録されます。公開 Worker 側にも同じ origin を設定すると、D1 障害時を含む未登録hostのエラー応答にも noindex を付けます。公開hostの割当ては Cloudflare の Custom Domain/Route と合わせて行います。
 
@@ -17,7 +19,7 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 
 - CMS bindingを持つページは、公開時生成にまだ含めません。#490 で一覧・詳細ページの依存を確定した後に追加します。
 - manifest の更新は CAS で競合を拒否します。最新manifestと下書きから数回再生成する自動retryは未実装です。
-- 翻訳・埋め込み・計測・サイト全体SEO出力・全ページのstyle再生成は、それぞれ #485、#486、#489、#483 と残りの #510 作業で接続します。
+- 翻訳・サイト全体SEO出力・全ページのstyle再生成は、それぞれ #485、#489、#483 と残りの #510 作業で接続します。埋め込み・計測は #486 で静的公開に接続します。
 - 既存の `/s/<slug>/` origin は従来の配信経路を維持します。新しい公開 Worker へ切り替えるhostは、完全なmanifestの受入後に割り当てます。
 
 この状態では、公開ページ1枚の静的生成・配信とverification hostのnoindexまでを確認できます。#510 の完了条件ではありません。
