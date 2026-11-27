@@ -241,6 +241,24 @@ test("shared page editing client discovers, reads custom blocks and saves with C
   assert.deepEqual(await client.save(target, snapshot.version, changed), { status: "conflict" });
 });
 
+test("direct publish ignores unknown response and snapshot keys", async () => {
+  const client = createPageEditingApiClient({
+    origin: "https://host.example",
+    siteId: target.siteId,
+    fetch: async () => Response.json({
+      status: "released",
+      futureResponseField: "ignored",
+      snapshot: { document: blockDocument, version: "v2", futureSnapshotField: "ignored" }
+    })
+  });
+
+  const result = await client.publishPageNow(target, { action: "publish" });
+
+  assert.equal(result.status, "released");
+  assert.equal(result.snapshot.version, "v2");
+  assert.deepEqual(Object.keys(result.snapshot).sort(), ["document", "version"]);
+});
+
 test("shared editing client reads the page catalog and prepares/applies a versioned page change", async () => {
   const client = clientFixture({ pageManagement: true });
   const discovery = await client.discover();

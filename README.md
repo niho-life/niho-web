@@ -17,7 +17,7 @@ Node.js 22 以上を使います。
 | @niho/web | 文書型と標準描画 |
 | @niho/web/core | 文書検証と CSS |
 | @niho/web/normalize | 文書の正規化 |
-| @niho/web/editing-api | ページ・サイト共通スタイルの共通編集 wire 契約 |
+| @niho/web/editing-api | ページ・版履歴・1操作公開・サイト共通スタイルの共通編集 wire 契約 |
 | @niho/web/editing-client | GUI / `niho-edit` 共通の編集 API client と条件付き読取 |
 | @niho/web/react | React renderer |
 | @niho/web/presentation-runtime | 公開ページの対話機能 |

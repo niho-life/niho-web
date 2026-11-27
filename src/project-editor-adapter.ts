@@ -385,6 +385,18 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       }
       return result;
     },
+    ...(adapter.publishPageNow ? { async publishPageNow(request, signal) {
+      const target = targetForProject(request.target, site);
+      if (request.action === "publish" ? request.revision !== undefined
+        : request.action !== "restore" || !Number.isSafeInteger(request.revision) || request.revision! < 1) throw new Error("公開操作と版の指定が一致しません。");
+      const result = await adapter.publishPageNow!({ target, action: request.action, ...(request.revision === undefined ? {} : { revision: request.revision }) }, signal);
+      if (result.status !== "released") return result;
+      const snapshot = structuredClone(result.snapshot);
+      assertDocumentTarget(snapshot.document, target);
+      assertPresentationTarget(snapshot.presentation, target);
+      const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+      return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+    } } : {}),
     ...(adapter.prepareReleaseSet && adapter.releaseSet && adapter.releaseSetStatus ? {
       async prepareReleaseSet(items, signal) {
         const checked = releaseSetItemsForProject(items, site);

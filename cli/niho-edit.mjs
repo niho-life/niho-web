@@ -592,7 +592,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "normalize", "lint"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "normalize", "lint"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -950,6 +950,33 @@ async function main() {
     return;
   }
   if (command === "apply") { await runPageApply(client, pageId, extra, values); return; }
+  if (command === "history") {
+    assertCommandOptions(values, ["locale", "cursor"]);
+    if (extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
+    const target = { siteId: values.site, pageId, locale: values.locale };
+    const result = await apiCall(() => client.listPageHistory(target, values.cursor, AbortSignal.timeout(30_000)));
+    emit(result, 200, 0, "pages.history"); return;
+  }
+  if (command === "publish" || command === "restore") {
+    assertCommandOptions(values, ["locale", "revision"]);
+    if (!IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
+    let revision;
+    if (command === "publish") {
+      if (extra.length || values.revision !== undefined) throw new CliError("invalid_arguments");
+    } else {
+      const requested = extra.length === 1 ? extra[0] : values.revision;
+      if (extra.length > 1 || extra.length === 1 && values.revision !== undefined) throw new CliError("invalid_arguments");
+      const match = /^(?:rev-)?([1-9][0-9]*)$/u.exec(requested ?? "");
+      revision = match ? Number(match[1]) : NaN;
+      if (!Number.isSafeInteger(revision)) throw new CliError("invalid_arguments");
+    }
+    const target = { siteId: values.site, pageId, locale: values.locale };
+    const result = await apiCall(() => client.publishPageNow(target, {
+      action: command === "publish" ? "publish" : "restore", ...(revision === undefined ? {} : { revision })
+    }, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.publish"); return; }
+    emit(result, 200, 0, "pages.publish"); return;
+  }
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
   const target = { siteId: values.site, pageId, locale: values.locale };
   if (command === "read") {

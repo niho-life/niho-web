@@ -145,7 +145,7 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.publish", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "site.styles.read", "site.styles.edit", "site.styles.publish",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
@@ -707,6 +707,35 @@ test("niho-edit --studio sends read, CAS save and two-phase page release with Ac
   });
   assert.equal(applied.exitCode, 0, applied.stdout);
   assert.deepEqual(JSON.parse(applied.stdout).result, result);
+});
+
+test("niho-edit --studio publishes, lists history, and restores with one request per command", async () => {
+  const accessClientId = `${"c".repeat(32)}.access`, accessClientSecret = "fixture-secret";
+  const access = { studio: true, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret } };
+  const base = ["--studio"], pageArgs = [pageId, "--locale", locale];
+  const endpoint = (operation, query = `/${pageId}?locale=${encodeURIComponent(locale)}`) => `${origin}/api/edit/v1/sites/${siteId}/operations/${operation}${query}`;
+  const snapshot = { document: fixture, version: "v2" };
+  const published = await run([...base, "publish", ...pageArgs], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.publish"), expectedBody: { action: "publish" },
+    result: { status: "released", snapshot }
+  });
+  assert.equal(published.exitCode, 0, published.stderr);
+  assert.deepEqual(JSON.parse(published.stdout).result, { status: "released", snapshot });
+
+  const history = { entries: [{ id: "rev-2", revision: 2, label: "版 2", kind: "publish", createdAt: "2026-11-27T00:00:00.000Z" }] };
+  const listed = await run([...base, "history", ...pageArgs], {
+    ...access, expectedMethod: "GET", expectedUrl: endpoint("pages.history"), result: history
+  });
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout).result, history);
+
+  const restored = await run([...base, "restore", pageId, "rev-2", "--locale", locale], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.publish"), expectedBody: { action: "restore", revision: 2 },
+    result: { status: "released", snapshot }
+  });
+  assert.equal(restored.exitCode, 0, restored.stderr);
+  assert.deepEqual(JSON.parse(restored.stdout).result, { status: "released", snapshot });
 });
 
 test("niho-edit prepares, applies and checks an idempotent multi-page release set", async (t) => {

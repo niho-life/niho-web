@@ -18,6 +18,18 @@ niho-edit --studio --origin https://studio.example --site kamakura release home 
 
 `snapshot.json` の `document` を編集して保存する。競合したら現行版を読み直す。`operation_id` は UUID v4 を使い、結果が不明な場合は同じ plan・operation ID で再試行する。共通APIの入出力は[ページ編集 HTTP 契約](editing-api-contract.md)を参照。
 
+## Studio-native ページの公開と版履歴
+
+Studio-native site は `publish`、`history`、`restore` を各1回のAPI呼出しで実行します。`publish --changed` の一括公開とサイト全体の公開復元は別途対応中です。鎌倉の既存経路では移行が終わるまで上記の二段階コマンドを使います。
+
+```sh
+niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja
+niho-edit --studio --origin https://studio.example --site site-id history home --locale ja
+niho-edit --studio --origin https://studio.example --site site-id restore home 4 --locale ja
+```
+
+結果はJSONです。`history` の `id` を確認し、残っているrevisionを `restore` の `<revision>` に渡します。CLIの機械認証には site に委任された `pages.publish` grant が必要です。
+
 ## Studio-native CMS
 
 管理側の Studio origin を指定して `niho-edit --studio` を使います。人として呼ぶ場合は短時間の Access application token を `NIHO_EDIT_TOKEN` に渡します。サービスでは `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` と対象 site の D1 grant を使います。定義の適用は人の owner の権限です。例の origin と site は架空です。

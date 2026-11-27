@@ -4,7 +4,7 @@ import { parsePageDocument } from "../src/core.js";
 import { cmsId, parseCmsSchema } from "../src/cms-v2-schema.js";
 import { parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import { createBrowserRecoveryStore } from "../src/history.js";
+import { createBrowserRecoveryStore, parseRevisionPage } from "../src/history.js";
 import type {
   EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan,
   EditorSaveResult, EditorSite, EditorSnapshot, EditorTarget
@@ -77,6 +77,18 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       return (await refresh(signal)).pages;
     },
     readDocument: async (input, signal) => snapshot(await api(`${base}/${encodeURIComponent(input.pageId)}`, "GET", undefined, signal), input),
+    async listRevisions(request, signal) {
+      if (request.target.siteId !== project.site.id) throw new Error("プロジェクト外の履歴は参照できません。");
+      const query = request.cursor === undefined ? "" : `?cursor=${encodeURIComponent(request.cursor)}`;
+      return parseRevisionPage(await api(`${base}/${encodeURIComponent(request.target.pageId)}/history${query}`, "GET", undefined, signal));
+    },
+    async readRevision(request, signal) {
+      if (request.target.siteId !== project.site.id) throw new Error("プロジェクト外の履歴は参照できません。");
+      const value = record(await api(`${base}/${encodeURIComponent(request.target.pageId)}/history-read`, "POST", { id: request.id }, signal));
+      const document = parsePageDocument(value.document);
+      if (document.siteId !== request.target.siteId || document.pageId !== request.target.pageId || document.locale !== request.target.locale) throw new Error("履歴の対象が一致しません。");
+      return { document };
+    },
     cmsBindings: {
       async read(input, signal) {
         const value = record(await api(`${base}/${encodeURIComponent(input.pageId)}/cms-bindings`, "GET", undefined, signal));
@@ -116,6 +128,16 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       if (value.status !== "released") throw new Error("公開結果が正しくありません。");
       return { status: "released" as const, snapshot: snapshot(value.snapshot, plan.target) };
     }),
+    publishPageNow: (request, signal) => {
+      if (request.target.siteId !== project.site.id || request.action === "restore" && (!Number.isSafeInteger(request.revision) || request.revision! < 1)
+        || request.action === "publish" && request.revision !== undefined) throw new Error("公開対象または版が正しくありません。");
+      return conflict(async () => {
+        const value = record(await api(`${base}/${encodeURIComponent(request.target.pageId)}/publish`, "POST",
+          { action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) }, signal));
+        if (value.status !== "released") throw new Error("公開結果が正しくありません。");
+        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target) };
+      });
+    },
     pagePathEditable: true,
     pageChangeActions: ["create", "update", "visibility"],
     preparePageChange: async (change: EditorPageChange, signal: AbortSignal) => await api(`${base}/page-changes/prepare`, "POST", { change }, signal) as EditorPageChangePlan,
