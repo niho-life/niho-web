@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { applyKamakuraSiteImport, prepareKamakuraSiteImport } from "../scripts/import-kamakura-site.mjs";
 import { JSDOM } from "jsdom";
+import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
 import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
@@ -1327,7 +1328,8 @@ testWithD1("Kamakura machine editing enforces current site grants for discovery,
     const input = request.method === "GET" ? null : await request.json();
     calls.push({ path: url.pathname + url.search, method: request.method, scope: claims.scope, input });
     if (url.pathname.endsWith("/capabilities")) {
-      return Response.json({ apiVersion: "v1", siteId, operations: ["pages.read", "pages.save", "pages.release-plan", "pages.release", "assets.list"].map((id) => ({ id })) });
+      const ids = new Set(["pages.read", "pages.save", "pages.release-plan", "pages.release", "assets.list"]);
+      return Response.json({ apiVersion: "v1", siteId, operations: EDITING_OPERATIONS.filter(({ id }) => ids.has(id)) });
     }
     if (url.pathname.endsWith("pages.release/home")) {
       return input.expectedVersion === "draft-v2"

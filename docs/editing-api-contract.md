@@ -10,7 +10,7 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 
 ホストは `createPageEditingApi(adapter)` の返すRequest handlerを、自分が選んだoriginとpathへ接続します。既定pathは `/api/edit/v1` です。操作ID・権限・method・path・input/result schema・安定エラーの正本は `EDITING_OPERATIONS` です。公開する操作IDの型もこのcatalogから導出し、discoveryとクライアント型が別々の一覧にならないようにします。`GET /sites/{siteId}/capabilities` は、その認証主体が使える操作ID・権限・HTTP method・path・JSON Schema・安定エラー一覧を返します。
 
-サイト共通スタイル操作は `GET /sites/{siteId}/capabilities?features=site.styles` でopt-inします。対応hostは実装済みの `site.styles.read/edit/publish` だけを追加します。ページ操作のschemaはstyle機能の有無で変わりません。
+サイト共通スタイル操作は `GET /sites/{siteId}/capabilities?features=site.styles` でopt-inします。対応hostは実装済みの `site.styles.read/edit/publish` だけを追加します。機能交渉は公開する操作だけを変え、既存操作のpathやschemaは操作カタログどおりに保ちます。ページ操作のschemaはstyle機能の有無で変わりません。
 
 | ID | Method | Path | 権限 | 入力 | 結果 |
 | --- | --- | --- | --- | --- | --- |
