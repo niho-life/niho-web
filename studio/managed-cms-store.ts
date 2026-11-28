@@ -370,12 +370,28 @@ export class CmsStore {
     return results[0]?.meta?.changes === 1;
   }
 
-  async publish(site: Site, job: Job, snapshot: CmsReleaseSnapshot, extra?: CmsPublishCommit) {
-    await this.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
-    const at = dateNow(), released = { id: snapshot.releaseId, at, routeTableRevision: snapshot.routeTable.revision };
-    const state: CmsState = snapshot.locale === site.state.locale
+  /** The CMS state after `snapshot` becomes the published release: the source locale moves `current`, a translation moves its own pointer. */
+  releasedState(site: Site, snapshot: CmsReleaseSnapshot): CmsState {
+    const released = { id: snapshot.releaseId, at: dateNow(), routeTableRevision: snapshot.routeTable.revision };
+    return snapshot.locale === site.state.locale
       ? { ...site.state, current: { id: released.id, at: released.at }, routeTableRevision: released.routeTableRevision }
       : { ...site.state, localizedReleases: { ...(site.state.localizedReleases ?? {}), [snapshot.locale]: released } };
+  }
+
+  /** Release ledger, delivery event and audit rows. `guard` may refer to ?1 (generation) and ?2 (site). */
+  async releaseRecords(site: Site, snapshot: CmsReleaseSnapshot, generation: string, guard: string, operation: string) {
+    return [
+      this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${guard}`)
+        .bind(generation, site.siteId, snapshot.releaseId),
+      await this.deliveryEvent(generation, snapshot, guard),
+      this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, ?4 WHERE ${guard}`)
+        .bind(generation, site.siteId, site.actor.id, operation)
+    ];
+  }
+
+  async publish(site: Site, job: Job, snapshot: CmsReleaseSnapshot, extra?: CmsPublishCommit) {
+    await this.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
+    const state = this.releasedState(site, snapshot);
     const generation = opaque("tx");
     const guard = "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?1)";
     const statements = [
@@ -385,11 +401,7 @@ export class CmsStore {
           AND lease_until > unixepoch()) ${extra ? `AND (${extra.gateSql})` : ""}`)
         .bind(...scopeValues(site, "cms.publish"), generation, JSON.stringify(state), site.generation, job.id, job.lease_id, ...(extra?.gateValues ?? [])),
       ...(extra?.statements(generation) ?? []),
-      this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${guard}`)
-        .bind(generation, site.siteId, snapshot.releaseId),
-      await this.deliveryEvent(generation, snapshot, guard),
-      this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, 'cms.release.delivered' WHERE ${guard}`)
-        .bind(generation, site.siteId, site.actor.id),
+      ...await this.releaseRecords(site, snapshot, generation, guard, "cms.release.delivered"),
       this.db.prepare(`UPDATE managed_cms_outbox SET state = 'delivered', lease_id = NULL, lease_until = NULL, failure = NULL
         WHERE site_id = ?2 AND id = ?3 AND ${guard}`).bind(generation, site.siteId, job.id)
     ];

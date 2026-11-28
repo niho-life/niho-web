@@ -571,7 +571,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (!discovery.operations.some((operation) => operation.id === "site.publication-changes")) throw new EditingApiClientError("not_found", 404);
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.publication-changes`, "GET", undefined, signal);
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!isEditingApiVersion(body.version) || !Array.isArray(body.changes) || body.changes.length > 503) {
+      if (!isEditingApiVersion(body.version) || !Array.isArray(body.changes) || body.changes.length > 1003) {
         throw new EditingApiClientError("invalid_response", response.status);
       }
       const changes = body.changes.map((value) => {
@@ -584,6 +584,17 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
             const target = { siteId: identifier(value.target.siteId, "$target.siteId"), pageId: identifier(value.target.pageId, "$target.pageId"), locale: localeCode(value.target.locale, "$target.locale") };
             if (target.siteId !== siteId) throw new Error("target site mismatch");
             return { kind: "page" as const, target, title: value.title, path: value.path, reason: value.reason as "new" | "draft" | "path" | "visibility" };
+          } catch { throw new EditingApiClientError("invalid_response", response.status); }
+        }
+        if (value.kind === "cms" && plainRecord(value.target)
+          && typeof value.title === "string" && value.title.length <= 500
+          && (value.path === null || typeof value.path === "string" && value.path.length <= 512)
+          && ["new", "draft"].includes(String(value.reason))) {
+          try {
+            const target = { siteId: identifier(value.target.siteId, "$target.siteId"), collectionId: cmsCollection(value.target.collectionId),
+              itemId: cmsItem(value.target.itemId), locale: localeCode(value.target.locale, "$target.locale") };
+            if (target.siteId !== siteId) throw new Error("target site mismatch");
+            return { kind: "cms" as const, target, title: value.title, path: value.path as string | null, reason: value.reason as "new" | "draft" };
           } catch { throw new EditingApiClientError("invalid_response", response.status); }
         }
         if (value.kind === "shared"

@@ -3077,7 +3077,8 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
       return managedCliPublicSettings(request, env.DB, managedActor, projectId, siteId!, origin);
     }
     return managedEditorOperation(request, env.DB, managedActor, projectId, siteId!,
-      settings?.[1] === "redirects" ? "/editor/redirects" : "/editor/seo-settings", url.origin);
+      settings?.[1] === "redirects" ? "/editor/redirects" : "/editor/seo-settings", url.origin,
+      env.CMS_OBJECTS ? cmsStore(env, bridgeIdentity) : undefined);
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);

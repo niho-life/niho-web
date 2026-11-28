@@ -462,3 +462,40 @@ test("multi-page release set reports partial success when one target turns stale
   assert.deepEqual(await client.publishPageReleaseSet(plan), result, "retrying the same operation must not publish a completed target twice");
   assert.equal((await client.read(target)).version, "v2");
 });
+
+function publicationChangesClient(change, { server = false } = {}) {
+  const payload = { version: "changes.v1", changes: [change] };
+  if (!server) {
+    return createPageEditingApiClient({ origin: "https://host.example", siteId: target.siteId,
+      fetch: async (input) => Response.json(String(input).endsWith("/capabilities") || String(input).includes("capabilities")
+        ? { apiVersion: "v1", siteId: target.siteId, operations: EDITING_OPERATIONS } : payload) });
+  }
+  const api = createPageEditingApi({
+    async authenticate() { return { kind: "machine", subject: "agent", delegatedBy: "owner" }; },
+    async authorize(_actor, capability, scope) { return capability === "pages.read" && scope.siteId === target.siteId; },
+    async readPublicationChanges() { return payload; }
+  });
+  return createPageEditingApiClient({ origin: "https://host.example", siteId: target.siteId, fetch: (input, init) => api(new Request(input, init)) });
+}
+const cmsChange = { kind: "cms", target: { siteId: target.siteId, collectionId: "posts", itemId: "item_1", locale: "ja" },
+  title: "お知らせ", path: "/cms/posts/notice", reason: "draft" };
+
+test("publication changes carry CMS items and reject malformed ones on both sides", async () => {
+  for (const server of [false, true]) {
+    assert.deepEqual(await publicationChangesClient(cmsChange, { server }).readPublicationChanges(),
+      { version: "changes.v1", changes: [cmsChange] });
+    assert.deepEqual((await publicationChangesClient({ ...cmsChange, path: null, reason: "new" }, { server }).readPublicationChanges()).changes,
+      [{ ...cmsChange, path: null, reason: "new" }]);
+    for (const broken of [
+      { ...cmsChange, reason: "path" }, { ...cmsChange, path: 1 }, { ...cmsChange, title: 1 },
+      { ...cmsChange, target: { ...cmsChange.target, siteId: "another-site" } },
+      { ...cmsChange, target: { ...cmsChange.target, collectionId: "../posts" } },
+      { ...cmsChange, target: { siteId: target.siteId, collectionId: "posts", itemId: "item_1" } }
+    ]) {
+      await assert.rejects(publicationChangesClient(broken, { server }).readPublicationChanges(),
+        (error) => error instanceof EditingApiClientError && ["invalid_response", "host_contract_violation"].includes(error.code));
+    }
+  }
+  const unknown = await publicationChangesClient({ ...cmsChange, extra: true }, { server: true }).readPublicationChanges().catch((error) => error);
+  assert.ok(unknown instanceof EditingApiClientError, "the host contract is exact");
+});

@@ -1,4 +1,4 @@
-import { revalidateCmsRelease, type CmsProblem, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable } from "../src/cms-v2.js";
+import { planCmsRelease, revalidateCmsRelease, type CmsItemRevision, type CmsProblem, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable } from "../src/cms-v2.js";
 import { cmsItemKey } from "../src/cms-v2-schema.js";
 import { cmsLocalizedSchema } from "./managed-cms-localization.js";
 import { prepareManagedCmsPublication, type ManagedD1 } from "./managed-sites.js";
@@ -61,6 +61,27 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
     // Worker runs without a DOM parser. This initial renderer preserves rich text as inert text.
     publicRichText: ({ html }) => escapeHtml(html)
   };
+}
+
+/** Plan one release that publishes the saved drafts and keeps every other published pin. Shared by cms-publish and publish --changed. */
+export async function planCmsDraftRelease(store: CmsStore, site: Site, current: CmsReleaseSnapshot | null,
+  drafts: readonly { readonly item: CmsItemRevision; readonly path: string | null }[], redirect: boolean) {
+  const keys = new Set(drafts.map(({ item }) => cmsItemKey(item)));
+  let redirects = current?.redirects ?? [];
+  for (const { item, path: after } of drafts) {
+    const before = current?.items.find((entry) => cmsItemKey(entry) === cmsItemKey(item))?.path;
+    redirects = redirects.flatMap((entry) => {
+      if (entry.from === after) return [];
+      if (entry.to === before && before !== after) return redirect && after ? [{ from: entry.from, to: after }] : [];
+      return [entry];
+    });
+    if (redirect && before && after && before !== after) redirects = [...redirects, { from: before, to: after }];
+  }
+  const items = [...(current?.items ?? []).filter((entry) => !keys.has(cmsItemKey(entry))), ...drafts.map(({ item }) => item)]
+    .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
+  const release = await releaseContext(store, site, items);
+  return planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
+    routeTableRevision: release.routeTable.revision, expectedReleaseId: current?.releaseId ?? null, items, redirects }, opaque("release"), release);
 }
 
 const MAX_ATTEMPTS = 5;
