@@ -27,6 +27,9 @@ import { NIHO_EDIT_USAGE as USAGE } from "./niho-edit-usage.mjs";
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
 const MAX_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
+/** Studio 内サイトの画像ライブラリ（assets.upload）。サーバーの上限と同じ。 */
+const MAX_STUDIO_ASSET_BYTES = 20 * 1024 * 1024;
+const STUDIO_ASSET_TYPES = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", avif: "image/avif", gif: "image/gif" };
 const CLI_USER_AGENT = "niho-edit/0.1.0";
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
 const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
@@ -51,7 +54,7 @@ function argsFromCli() {
       studio: { type: "boolean" }, origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" }, "cms-bindings": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
-      name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
+      name: { type: "string" }, file: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
       ops: { type: "string" }, "dry-run": { type: "boolean" },
       "confirm-data-loss": { type: "boolean" },
@@ -690,7 +693,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "pages-catalog", "page-change", "changes", "site-history", "rollback", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register", "pull", "check", "push"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "assets-list", "assets-upload", "pages-catalog", "page-change", "changes", "site-history", "rollback", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register", "pull", "check", "push"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const syncDeps = { origin: baseOrigin, siteId: values.site, apiCall, emit, CliError, parsePublicSettings,
@@ -934,6 +937,39 @@ async function main() {
       : await apiCall(() => client.publishSiteStyles(input, signal));
     if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, `site.styles.${pageId}`); return; }
     emit(result, 200, result.status === "referenced" ? 1 : 0, `site.styles.${pageId}`); return;
+  }
+
+  if (values.studio && command === "assets-list") {
+    assertCommandOptions(values, ["provider", "cursor", "limit"]);
+    const limit = values.limit === undefined ? undefined : Number(values.limit);
+    if (pageId !== undefined || extra.length || limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
+      || values.provider !== undefined && !["studio-upload", "kamakura-source"].includes(values.provider)) throw new CliError("invalid_arguments");
+    const response = await studioOperation("POST", "assets.list", { ...(values.provider === undefined ? {} : { provider: values.provider }),
+      ...(values.cursor === undefined ? {} : { cursor: values.cursor }), ...(limit === undefined ? {} : { limit }) }, 1024 * 1024);
+    if (!response.ok) throw new CliError(typeof response.payload?.error === "string" ? response.payload.error : "request_failed", response.status);
+    process.stdout.write(`${JSON.stringify(response.payload)}\n`); return;
+  }
+
+  if (values.studio && command === "assets-upload") {
+    assertCommandOptions(values, ["file", "name"]);
+    if (pageId !== undefined || extra.length || typeof values.file !== "string" || values.file === "-") throw new CliError("invalid_arguments");
+    const mimeType = STUDIO_ASSET_TYPES[(/\.([A-Za-z0-9]+)$/u.exec(values.file)?.[1] ?? "").toLowerCase()];
+    const fileStat = await stat(values.file).catch(() => null);
+    if (!mimeType || !fileStat?.isFile() || fileStat.size < 1) throw new CliError("invalid_upload_file");
+    if (fileStat.size > MAX_STUDIO_ASSET_BYTES) throw new CliError("input_too_large");
+    const name = values.name ?? basename(values.file);
+    if (!name.trim() || name.length > 200 || /[\u0000-\u001f\u007f]/u.test(name)) throw new CliError("invalid_arguments");
+    const bytes = await readFile(values.file);
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/assets.upload`, {
+        method: "PUT", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(120_000),
+        headers: { ...headers, "Content-Type": mimeType, "X-Asset-Name": encodeURIComponent(name) }, body: new Uint8Array(bytes) });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 1024 * 1024);
+    if (!response.ok && payload?.status !== "rejected") throw new CliError(typeof payload?.error === "string" ? payload.error : "upload_rejected", response.status);
+    emit(payload, response.status, response.ok ? 0 : 1, "assets.upload"); return;
   }
 
   if (command === "assets-list") {

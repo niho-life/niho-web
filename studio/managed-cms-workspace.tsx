@@ -1,6 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { cmsLocalizationItemKey, type CmsCollection, type CmsDiscovery, type CmsItemRevision, type CmsProblem, type CmsReleasePin, type CmsReleaseSnapshot, type CmsSchema } from "../src/cms-v2.js";
 import { cmsDraftMatchesPublishedValues, redirectsForCmsRelease, starterCollection } from "./managed-cms-model.js";
+import { CmsGalleryField, CmsImageField } from "./managed-cms-image-field.js";
+import { createManagedAssetLibrary } from "./managed-asset-library.js";
+import type { AssetLibraryAdapter } from "../src/assets.js";
 import { collectionPublicPath, type CollectionFieldType, type CollectionValues, type CollectionValue } from "../src/collection-model.js";
 
 const ManagedCmsTranslation = lazy(() => import("./managed-cms-localization-workspace.js").then((module) => ({ default: module.ManagedCmsTranslation })));
@@ -92,6 +95,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   const [schemaReplacementProblems, setSchemaReplacementProblems] = useState<Record<string, CmsProblem>>({});
   const [confirmSchemaImpact, setConfirmSchemaImpact] = useState(false);
   const [busy, setBusy] = useState(false);
+  const assetLibrary = useMemo(() => createManagedAssetLibrary(siteId), [siteId]);
   const pendingKeys = useRef(new Map<string, string>());
   const pendingPlans = useRef(new Map<string, Confirmation>());
   const [feedback, setFeedback] = useState("");
@@ -580,7 +584,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
             </button>}
           </div>
           <form onSubmit={(event) => { event.preventDefault(); run(save); }}>
-            {currentCollection.fields.map((field) => <CmsFieldEditor key={`${collectionId}/${item.itemId}/${item.revision}/${field.fieldId}/${jsonEditorEpoch}`} field={field} value={values[field.fieldId] ?? null}
+            {currentCollection.fields.map((field) => <CmsFieldEditor key={`${collectionId}/${item.itemId}/${item.revision}/${field.fieldId}/${jsonEditorEpoch}`} siteId={siteId} assets={assetLibrary} field={field} value={values[field.fieldId] ?? null}
               invalidChange={(invalid) => setJsonInvalidFields((previous) => {
                 if (previous[field.fieldId] === invalid) return previous;
                 const next = { ...previous };
@@ -674,7 +678,8 @@ function CmsSchemaFieldOptions({ field, collections, disabled, update }: {
   return null;
 }
 
-function CmsFieldEditor({ field, value, disabled, update, invalidChange }: {
+function CmsFieldEditor({ field, value, disabled, update, invalidChange, siteId, assets }: {
+  siteId: string; assets: AssetLibraryAdapter;
   field: CmsCollection["fields"][number]; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void;
   invalidChange: (invalid: boolean) => void;
 }) {
@@ -685,6 +690,8 @@ function CmsFieldEditor({ field, value, disabled, update, invalidChange }: {
   if (["text", "slug", "url", "datetime"].includes(field.type)) return <label>{field.label}
     <input disabled={disabled} value={text} onChange={(event) => update(field.type === "datetime" && !event.target.value ? null : event.target.value)} />
   </label>;
+  if (field.type === "image") return <CmsImageField label={field.label} value={value} disabled={disabled} siteId={siteId} assets={assets} update={update} />;
+  if (field.type === "gallery") return <CmsGalleryField label={field.label} captionLabel={field.captionLabel} value={value} disabled={disabled} siteId={siteId} assets={assets} update={update} />;
   return <JsonFieldEditor label={field.label} value={value} disabled={disabled} update={update} invalidChange={invalidChange} />;
 }
 

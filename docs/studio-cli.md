@@ -29,6 +29,15 @@ niho-edit --studio --origin https://studio.example --site demo-site styles publi
 
 `styles read` は `{ draft: { version, styles }, published: { version, styles } }` を返します。`styles edit` には `{ expectedVersion, edits }`、`styles publish` には `{ expectedDraftVersion, expectedPublishedVersion }` を渡します。編集は版照合付きです。ページが参照する共通値の rename/delete は利用箇所を返して拒否し、文字スタイル内の token 参照は rename と同時に更新します。公開済みスタイルはページ生成時の HTML に使われます。スタイルの公開を全ページの作り直しへつなぐ操作は、#527 の共通部分公開に合わせて行います。
 
+## Studio内サイトの画像ライブラリ
+
+```sh
+niho-edit --studio --origin https://studio.example --site demo-site assets-upload --file ./sea.png --name sea.png
+niho-edit --studio --origin https://studio.example --site demo-site assets-list [--provider studio-upload|kamakura-source] [--cursor <cursor>]
+```
+
+`assets-upload` は JPEG・PNG・WebP・AVIF・GIF（20 MiB まで、拡張子で形式を決める）を 1 回の PUT で送り、`{ status: "uploaded", asset }` を返します。返った `provider` と `id` の参照を、ページの `img` の `asset` や CMS の image / gallery に入れます。`assets-list` は新しい順で、`assets-upload` は `pages.edit`、`assets-list` は `pages.read` の grant が要ります。`pull` / `push` は素材を同期しません（参照だけ）。
+
 ## Studio内サイトの公開配信設定と埋め込み
 
 GUI 操作との対応は `niho-edit --help` の一覧を参照してください。

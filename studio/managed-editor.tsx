@@ -16,6 +16,7 @@ import type {
 import { parseProjectSite, type Project } from "../src/projects.js";
 import { managedBlockContracts } from "./managed-embed-contract.js";
 import { managedEditorBlocks } from "./managed-embed-editor.js";
+import { createManagedAssetLibrary } from "./managed-asset-library.js";
 
 const VERSION = /^[^\u0000-\u001f\u007f]{1,200}$/u;
 
@@ -367,8 +368,9 @@ export function ManagedEditor({ project, actorId }: { readonly project: Project;
   const recovery = useMemo(() => createBrowserRecoveryStore({ scope: actorId }), [actorId]);
   const base = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor`;
   const blocks = useMemo(() => managedEditorBlocks(base), [base]);
+  const assets = useMemo(() => createManagedAssetLibrary(project.site.id), [project.site.id]);
   return <main className="studio-editor studio-managed-editor">
-    <StudioPageEditor adapter={adapter} blocks={blocks} enableUrlEmbeds autosave recovery={recovery} toolbarStart={<>
+    <StudioPageEditor adapter={adapter} blocks={blocks} assets={assets} enableUrlEmbeds autosave recovery={recovery} toolbarStart={<>
       <a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>
       <ManagedPublicationPanel siteId={project.site.id} />
     </>} />

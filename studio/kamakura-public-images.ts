@@ -38,3 +38,15 @@ export function kamakuraResponsiveImageSrcSet(source: string): string | null {
   if (!url) return null;
   return RESPONSIVE_IMAGE_WIDTHS.map((width) => `${transformedUrl(url, width)} ${width}w`).join(", ");
 }
+
+const STUDIO_IMAGE_PATH = /^\/_niho\/assets\/img_[a-z0-9]{24}\.(?:avif|jpg|png|webp)$/u;
+
+/** Studio 画像（共通 origin の /_niho/assets/）の幅別候補。gif は動きを保つため対象外。 */
+export function studioImageSrcSet(source: string, origin: string): string | null {
+  if (source.length > 8192) return null;
+  let url: URL;
+  try { url = new URL(source); } catch { return null; }
+  if (url.origin !== origin || url.protocol !== "https:" || url.username || url.password || url.search || url.hash
+    || !STUDIO_IMAGE_PATH.test(url.pathname)) return null;
+  return RESPONSIVE_IMAGE_WIDTHS.map((width) => `${origin}/cdn-cgi/image/width=${width},format=auto${url.pathname} ${width}w`).join(", ");
+}

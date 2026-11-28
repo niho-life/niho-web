@@ -70,6 +70,8 @@ niho-edit --origin <https-origin> --site <site-id> assets-list [--search <text>]
 niho-edit --origin <https-origin> --site <site-id> assets-usages <provider> <asset-id>
 niho-edit --origin <https-origin> --site <site-id> assets-resolve --json <references-file|->
 niho-edit --studio --origin <studio-origin> --site <site-id> assets-resolve --json <references-file|->
+niho-edit --studio --origin <studio-origin> --site <site-id> assets-list [--provider <studio-upload|kamakura-source>] [--limit <number>] [--cursor <cursor>]
+niho-edit --studio --origin <studio-origin> --site <site-id> assets-upload --file <image-file> [--name <name>]
 niho-edit --origin <https-origin> --site <site-id> assets-update <provider> <asset-id> --json <update-file|->
 niho-edit --origin <https-origin> --site <site-id> assets-upload <file> --mime-type <mime> --provider <provider> [--name <name>] [--folder-id <id>] [--upload-origin <https-origin>]
 niho-edit --origin <https-origin> --site <site-id> assets-delete <provider> <asset-id> --expected-version <version>

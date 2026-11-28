@@ -77,6 +77,17 @@ GA4 には計測用に限定した接続先を許可する。標準操作の run
 
 CLIはtoken、service credential、Access subjectを標準出力へ含めない。操作IDを使う共通 API は、同じ actor・対象サイトの再送と異なる内容での操作ID再利用を区別する。取得手順は [Studio CLI](studio-cli.md) と [CloudflareのCLI向けAccess手順](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/) を参照する。
 
+## 画像ライブラリ
+
+Studio 内サイトは、アップロードした画像をページの画像・背景・OG 画像と CMS の image / gallery 項目に使える。参照は `{ provider: "studio-upload", id: "img_<24 文字>" }`。
+
+- 保存: バイト列は非公開 R2 `CMS_OBJECTS` の `sites/{siteId}/assets/{sha256}`、メタデータは D1 `managed_site_assets`。同じサイトに同じバイト列を上げると、同じ素材を返す。
+- 形式と上限: JPEG・PNG・WebP・AVIF・GIF（SVG は不可）。1 枚 20 MiB まで。`Content-Type` と先頭バイトの形式が一致すること。`Content-Length` は必須。幅と高さはサーバーで読む（AVIF は null）。
+- API: `POST /api/edit/v2/sites/{siteId}/operations/assets.list`、`PUT .../assets.upload`（本文は画像、`X-Asset-Name` は URI エンコードの名前）。一覧は `pages.read`、アップロードは `pages.edit` と同じ権限（grant の種類は増やさない）。`assets.resolve` はアップロード素材も返す。
+- 配信: `PUBLIC_SITES_ORIGIN` の `/_niho/assets/{id}.{ext}` を公開 Worker が R2 から返す（`Cache-Control: public, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`）。不明な ID や形式と合わない拡張子は 404。公開 HTML の `src` はこの絶対 URL で、CSP は asset manifest の完全一致で許可する。
+- 幅別 `srcset`: 環境変数 `PUBLIC_IMAGE_RESIZING=cloudflare` のときだけ、ページの画像に `/cdn-cgi/image/width=W,format=auto/_niho/assets/...` の候補を出す（ゾーンで Image Resizing が有効なこと）。未設定なら原寸の 1 枚。
+- 削除と使用状況の集計は未実装（上げた画像は残る）。サイトごとの総量上限もない。
+
 ## CMS
 
 公開 URL は既定で `/s/{slug}/cms` 配下です。CMS v2 でコレクションの `pathField` に text field を指定すると、項目詳細の URL はその値を使い、英語では `/en` を前置します。固定ページ・別の CMS 項目・転送との path 衝突は公開計画で拒否します。

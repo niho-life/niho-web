@@ -1102,3 +1102,36 @@ test("niho-edit only sends node names to a write operation advertising pages.nam
   assert.equal(saved.exitCode, 0, saved.stderr);
   assert.equal(JSON.parse(saved.stdout).result.diff[0].after, name);
 });
+
+test("studio assets-list posts the library query and assets-upload sends one raw PUT", async () => {
+  const route = `${origin}/api/edit/v2/sites/${siteId}/operations`;
+  const listed = await run(["--studio", "assets-list", "--provider", "studio-upload", "--limit", "5"], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${route}/assets.list`, expectedBody: { provider: "studio-upload", limit: 5 }, result: { assets: [] } });
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout), { assets: [] });
+  assert.equal((await run(["--studio", "assets-list", "--provider", "other"], { studio: true, expectedMethod: "POST", expectedUrl: `${route}/assets.list` })).exitCode, 1);
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-assets-"));
+  try {
+    const file = join(directory, "sea one.png");
+    await writeFile(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+    const source = `globalThis.fetch = async (url, init) => {
+      const headers = new Headers(init.headers);
+      if (String(url) !== ${JSON.stringify(`${route}/assets.upload`)} || init.method !== "PUT") throw new Error("unexpected request");
+      if (headers.get("Content-Type") !== "image/png" || headers.get("X-Asset-Name") !== "sea%20one.png" || headers.get("cf-access-token") !== "fixture-token") throw new Error("unexpected headers");
+      if (Buffer.from(init.body).toString("hex") !== "89504e47010203") throw new Error("unexpected body");
+      return new Response(JSON.stringify({ status: "uploaded", asset: { id: "img_x" } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };`;
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(source)}`, command, "--origin", origin, "--site", siteId,
+        "--studio", "assets-upload", "--file", file], { env: { ...process.env, NIHO_EDIT_TOKEN: "fixture-token" }, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "", stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+      child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+      child.once("error", reject);
+      child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout).result, { status: "uploaded", asset: { id: "img_x" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
