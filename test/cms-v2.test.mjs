@@ -53,6 +53,35 @@ test("CMS rich-text bindings replace a text placeholder only through the host pr
   assert.throws(() => resolveCmsPageBindings(page, wrongField, source, { detail }), /型が一致しません/u);
 });
 
+test("CMS detail seo takes the first non-empty field, adds the suffix only to a fallback title, and validates field types", () => {
+  const model = schema(), pageId = "article";
+  const item = (values) => parseCmsItemRevision({ ...post, siteId, schemaRevision: model.schemaRevision, revision: "rev-seo", values: { "field-slug": "story", "field-title": "題名", ...values } }, model);
+  const page = parsePageDocument({ schemaVersion: 1, siteId, pageId, locale, revision: 1, title: "テンプレート", meta: { description: "テンプレートの説明" }, tokens: {},
+    body: [{ type: "element", tag: "h1", id: "heading", children: [{ type: "text", text: "仮" }] }] });
+  const bindings = (seo) => ({ schemaVersion: 1, siteId, pageId, locale, lists: [], detail: { collectionId: "posts", slugFieldId: "field-slug", seo,
+    fields: [{ nodeId: "heading", target: "text", fieldId: "field-title" }] } });
+  const seo = { title: ["field-summary", "field-title"], titleSuffix: " | 活動", description: ["field-summary"], image: ["field-cover"] };
+  const resolve = (values, input = seo) => resolveCmsPageBindings(page, bindings(input), { schema: model, items: [item(values)] }, { detail: { slug: "story" } });
+  const cover = { provider: "fixture", id: "cover-1" };
+  const first = resolve({ "field-summary": "  見出し\nです ", "field-cover": cover });
+  assert.equal(first.title, "見出し です", "the first field has no suffix");
+  assert.equal(first.meta.description, "見出し です");
+  assert.deepEqual(first.meta.ogImage, { asset: cover, alt: "見出し です" });
+  const fallback = resolve({ "field-summary": "" });
+  assert.equal(fallback.title, "題名 | 活動", "a later field gets the suffix");
+  assert.equal(fallback.meta.description, "テンプレートの説明", "empty fields keep the template value");
+  assert.equal(fallback.meta.ogImage, undefined);
+  assert.equal(resolve({ "field-summary": "あ".repeat(400) }).title.length, 300);
+  assert.equal(resolve({}, { description: ["field-summary"] }).title, "テンプレート");
+  assert.throws(() => resolve({}, { title: ["field-cover"] }), /型が一致しません|head に結び付ける/u);
+  assert.throws(() => resolve({}, { image: ["field-title"] }), /head に結び付ける/u);
+  assert.throws(() => resolve({}, { title: ["field-missing"] }), /head に結び付ける/u);
+  for (const invalid of [{}, { title: [] }, { title: ["a", "b", "c", "d", "e"] }, { title: ["field-title"], titleSuffix: "x" }, { title: ["a", "b"], titleSuffix: "" },
+    { title: ["a", "b"], titleSuffix: "x".repeat(61) }, { title: ["a", "a"] }, { extra: 1 }]) {
+    assert.throws(() => parseCmsPageBindings(bindings(invalid), page), undefined, JSON.stringify(invalid));
+  }
+});
+
 test("CMS page projection filters single selects and resolves only approved asset references", () => {
   const model = schema(), pageId = "articles", cover = { provider: "cms-fixture", id: "cover-1" };
   const article = parseCmsItemRevision({ ...post, siteId, schemaRevision: model.schemaRevision, revision: "rev-1", values: {
