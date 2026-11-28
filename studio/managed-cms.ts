@@ -482,7 +482,7 @@ async function localizationOperation(store: CmsStore, site: Site, operation: Ope
   return current ? conflictResult(current) : notFound();
 }
 
-async function localizationReleaseContext(store: CmsStore, site: Site, targetLocale: string,
+export async function localizationReleaseContext(store: CmsStore, site: Site, targetLocale: string,
   revisions: readonly CmsItemRevision[] = []): Promise<CmsReleaseContext> {
   const schema = cmsLocalizedSchema(site.state.schema, targetLocale);
   const [routeTable, publicAssets] = await Promise.all([
@@ -505,7 +505,7 @@ type CmsLocalizationReleasePlan =
   | { readonly status: "invalid"; readonly problems: readonly CmsProblem[] }
   | { readonly status: "conflict" };
 
-async function planCmsLocalizationRelease(input: {
+export async function planCmsLocalizationRelease(input: {
   readonly schema: CmsSchema;
   readonly sourceLocale: string;
   readonly targetLocale: string;

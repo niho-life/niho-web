@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { applyKamakuraSiteImport, prepareKamakuraSiteImport } from "../scripts/import-kamakura-site.mjs";
+import { applyKamakuraSiteImport, finalizeKamakuraSiteImport, prepareKamakuraSiteImport } from "../scripts/import-kamakura-site.mjs";
 import { JSDOM } from "jsdom";
 import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
@@ -14,6 +14,8 @@ import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
 import { renderPageToHtml } from "../dist/server.js";
 import { readReleaseSettings, registeredManagedSite, registeredManagedSiteQuery, smokeStudio } from "../studio/release.mjs";
+import { createPageEditingApiClient, EditingApiClientError } from "../dist/editing-client.js";
+import { runPull, runPush } from "../cli/niho-edit-sync.mjs";
 import { cmsDeliveryHash, parseCmsDeliverySnapshot, serializeCmsDeliverySnapshot, signCmsDeliveryRequest } from "../dist/cms-delivery-contract.js";
 
 const { DatabaseSync } = await import("node:sqlite").catch(() => ({}));
@@ -30,7 +32,7 @@ const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
   stdin: {
-    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { releaseImpacts } from "./studio/managed-cms-release.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { renderManagedPage } from "./studio/managed-page-publication.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts"; export { inspectManagedHtmlSeo } from "./studio/managed-html-seo-checks.ts";',
+    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { releaseImpacts } from "./studio/managed-cms-release.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { renderManagedPage } from "./studio/managed-page-publication.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts"; export { inspectManagedHtmlSeo } from "./src/managed-html-seo-checks.ts";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url))
   },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false,
@@ -2789,6 +2791,33 @@ testWithD1("External CMS delivery links committed events, immutable snapshots an
   assert.deepEqual(audit.map(({ operation }) => operation), ["cms.delivery.credential.issued", "cms.delivery.credential.revoked"]);
 });
 
+testWithD1("Kamakura import finalize rejects an item path that collides with a translated item path", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-collision");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = await site.read("cms.schema.read");
+  const origin = "https://migration-collision.example.test", siteId = "fixture-collision";
+  const item = (itemId, path, translations) => ({ collectionId: "posts", itemId,
+    published: { ...values(itemId, itemId), public_path: path }, draft: { ...values(itemId, itemId), public_path: path },
+    ...(translations ? { translations } : {}) });
+  // 翻訳先の release に入るのは全項目が確認済みの翻訳だけ。公開パスの項目は翻訳しない。
+  const reviewed = { title: { value: "Translated", reviewed: true }, slug: { value: "translated", reviewed: true },
+    body: { value: "Translated", reviewed: true } };
+  const home = { document: { schemaVersion: 1, siteId, pageId: "home-source", locale: "ja", revision: 1, title: "Home", tokens: {}, body: [] } };
+  const source = { formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
+    pages: [{ sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public", published: home, draft: home }],
+    cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => collection.id !== "posts" ? collection
+      : { ...collection, pathField: "public_path", fields: [...collection.fields,
+        { fieldId: "public_path", key: "public_path", label: "URL", type: "text", placement: "main" }] }) },
+      items: [item("first", "/foo", { targetLocale: "en", published: reviewed, draft: reviewed }), item("second", "/en/foo")] },
+    redirects: [], scheduled: [] };
+  const bytes = Buffer.from(JSON.stringify(source));
+  const prepared = await prepareKamakuraSiteImport(bytes, createHash("sha256").update(bytes).digest("hex"), target);
+  await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  await assert.rejects(() => finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch), /import_finalize: HTTP 400/u);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS n FROM managed_cms_releases").get().n, 0);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS n FROM managed_pages WHERE site_id = ? AND published_revision IS NOT NULL").get(site.siteId).n, 0);
+});
+
 testWithD1("Kamakura import seeds a noindex verification site and preserves immutable public and draft revisions on retry", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-fixture");
   const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
@@ -2983,4 +3012,160 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", endpoint, {
     target, sourceDigest: digest, action: "page", payload: { ...prepared.pages[0], visibility: "private" }
   }, { cli: true }), 409);
+
+  // finalize は取り込んだ公開版を次の全ページ公開の対象にするだけで、公開 manifest は切り替えない。
+  const finalized = await finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  assert.equal(finalized.publishedPages, 2);
+  assert.deepEqual(await finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch), finalized);
+  assert.equal(counts("managed_cms_releases"), 2);
+  assert.equal(counts("managed_page_publications"), 0);
+  const publicHtml = async (path) => {
+    const response = await publishedSiteRequest(new Request(`${target.verificationOrigin}/s/migration-fixture${path}`,
+      { headers: { "Cache-Control": "no-cache" } }), h.env);
+    return { status: response.status, text: await response.text() };
+  };
+  assert.equal((await publicHtml("/")).status, 404);
+  // 全ページ生成の前に CMS 公開で manifest ができても、確定した固定ページは次の全ページ生成の対象に残る。
+  const confirmed = (await site.read("cms.release.current")).snapshot;
+  await site.read("cms.release.apply", await releasePlan(site, confirmed.schema.schemaRevision, confirmed.releaseId, confirmed.items));
+  await h.cron();
+  assert.equal((await publicHtml("/")).status, 404);
+  assert.equal(counts("managed_page_publications"), 0);
+  const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
+  const publishAll = async () => {
+    const pending = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.publication-changes"), 200);
+    return body(await h.send(MANAGEMENT_ORIGIN, "POST", operations + "site.publish", { expectedVersion: pending.version, scope: "all" }), 200);
+  };
+  assert.equal((await publishAll()).status, "released");
+  const home = await publicHtml("/");
+  assert.equal(home.status, 200);
+  assert.match(home.text, /Published fixture/u);
+  assert.doesNotMatch(home.text, /Current fixture/u);
+  // 詳細テンプレートのページは、公開版の CMS 項目の URL で生成される。
+  const detail = await publicHtml("/deferred/notice");
+  assert.equal(detail.status, 200);
+  assert.match(detail.text, /Published post/u);
+  assert.doesNotMatch(detail.text, /Draft post/u);
+  assert.equal((await publicHtml("/deferred/published-related")).status, 200);
+  assert.equal((await publicHtml("/deferred/draft-related")).status, 404);
+  assert.equal((await publicHtml("/en")).status, 404, "a page without a published version stays unpublished");
+  assert.equal(counts("managed_page_publications"), 2);
+  const homeDraft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "pages.read/home?locale=ja"), 200);
+  assert.equal(homeDraft.document.title, "Current fixture");
+  assert.equal((await publishAll()).status, "released");
+  assert.equal(counts("managed_page_publications"), 2, "recorded versions are not recorded again");
+
+  // 確定した release は日英とも読め、以後の CMS 公開は取り込んだ CMS ページも作り直す。
+  const translated = await site.read("cms.localization.release.current");
+  assert.ok(translated.releaseId.startsWith("release_import_"));
+  assert.equal(translated.snapshot.locale, "en");
+  const current = await site.read("cms.release.current");
+  const drafts = await Promise.all(result.mapping.cmsItems.map(async ({ itemId }) =>
+    (await site.read("cms.items.read", { collectionId: "posts", itemId })).item));
+  await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.snapshot.releaseId, drafts));
+  await h.cron();
+  assert.match((await publicHtml("/deferred/notice")).text, /Draft post/u);
+  assert.equal((await publicHtml("/deferred/draft-related")).status, 200);
+});
+
+testWithD1("Studio CLI file sync pulls, pushes and publishes through the Studio worker", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "File sync", slug: "file-sync", locale: "ja" }), 201);
+  const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const grant = h.sqlite.prepare("INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject) VALUES (?, ?, ?, ?, ?)");
+  for (const capability of ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit"]) {
+    grant.run(SERVICE_CLIENT, site.projectId, site.siteId, capability, OWNER);
+  }
+  const publicFetch = (path, init = {}) => h.fetch(`${PUBLIC_ORIGIN}/s/file-sync${path}`, { ...init, headers: { "Cache-Control": "no-cache" } });
+  const withHeading = async (text) => {
+    const home = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
+    home.document.body = [{ type: "element", id: "heading", tag: "h1", children: [{ type: "text", text }] }];
+    return body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: home.version, document: home.document }), 200);
+  };
+  await withHeading("初期の見出し");
+
+  class CliError extends Error {
+    constructor(code, status = null, details = undefined) { super(code); this.code = code; this.status = status; this.details = details; }
+  }
+  const headers = { "Cf-Access-Jwt-Assertion": h.serviceToken, "X-Studio-CMS-Version": "2", "User-Agent": "niho-edit/0.1.0" };
+  const client = createPageEditingApiClient({ origin: MANAGEMENT_ORIGIN, siteId: site.siteId, credentials: "omit", headers,
+    fetch: (url, init) => h.fetch(url, init), preferLegacyDiscovery: true });
+  const outputs = [];
+  const deps = {
+    origin: MANAGEMENT_ORIGIN, siteId: site.siteId, client, CliError,
+    emit: (result, _status, code) => { outputs.push({ result, code }); },
+    apiCall: async (run) => {
+      try { return await run(); }
+      catch (error) { if (error instanceof EditingApiClientError) throw new CliError(error.code, error.status, error.details); throw error; }
+    },
+    studioOperation: async (method, name, input) => {
+      const response = await h.fetch(`${MANAGEMENT_ORIGIN}/api/edit/v2/sites/${site.siteId}/operations/${name}`, { method,
+        headers: { ...headers, ...(input === undefined ? {} : { "Content-Type": "application/json" }) }, ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+      return { status: response.status, ok: response.ok, payload: await response.json() };
+    },
+    parsePublicSettings(payload) {
+      const { domain, origins } = payload;
+      return domain && origins ? { domain: { hostname: domain.hostname, noindex: domain.noindex, version: domain.version },
+        origins: { frameOrigins: origins.frameOrigins, resourceOrigins: origins.resourceOrigins, version: origins.version } } : null;
+    },
+    validators: { IDENTIFIER: /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u, LOCALE: /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u,
+      cmsCollection: (value) => /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/u.test(value), cmsItem: (value) => /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$/u.test(value) }
+  };
+  const last = () => outputs.at(-1);
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-live-sync-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const dir = join(directory, "site");
+  const readFileJson = async (path) => JSON.parse(await readFile(join(dir, path), "utf8"));
+  const writeFileJson = (path, value) => writeFile(join(dir, path), `${JSON.stringify(value, null, 2)}\n`);
+
+  // 1. pull
+  await runPull(dir, deps);
+  assert.equal(last().code, 0, JSON.stringify(last().result));
+  const files = (await readdir(dir, { recursive: true })).map((path) => path.split("\\").join("/"));
+  for (const path of ["pages/ja/home.json", "site/seo.json", "site/redirects.json", "site/public.json", "site/styles.json", ".niho/state.json"]) {
+    assert.ok(files.includes(path), `${path} is written`);
+  }
+
+  // 2. edit and push
+  const home = await readFileJson("pages/ja/home.json");
+  home.body[0].children[0].text = "変更後の見出し";
+  await writeFileJson("pages/ja/home.json", home);
+  const seo = await readFileJson("site/seo.json");
+  seo.description = "ファイル同期で変えた説明";
+  await writeFileJson("site/seo.json", seo);
+  const redirects = await readFileJson("site/redirects.json");
+  redirects.push({ locale: "ja", fromPath: "/legacy", toPath: "/" });
+  await writeFileJson("site/redirects.json", redirects);
+  await runPush(dir, deps);
+  assert.equal(last().code, 0, JSON.stringify(last().result));
+  assert.deepEqual([...last().result.saved].sort(), ["pages/ja/home.json", "site/redirects.json", "site/seo.json"]);
+
+  // 3. publish the pending changes
+  const pending = await client.readPublicationChanges();
+  const released = await client.publishSiteNow(pending.version, "changed");
+  assert.equal(released.status, "released", JSON.stringify(released));
+  const html = await (await publicFetch("/")).text();
+  assert.match(html, /変更後の見出し/u);
+  assert.match(html, /ファイル同期で変えた説明/u);
+  const legacy = await publicFetch("/legacy", { redirect: "manual" });
+  assert.equal(legacy.status, 301);
+  assert.match(legacy.headers.get("Location"), /\/s\/file-sync\/?$/u);
+
+  // 4. pulling again changes nothing
+  await runPull(dir, deps);
+  assert.equal(last().code, 0, JSON.stringify(last().result));
+  assert.equal(last().result.counts.written, 0);
+  assert.deepEqual(last().result.conflicts, []);
+
+  // 5. a GUI save moves the version, so a local edit of the same page is a conflict and is left alone
+  await withHeading("GUI で変えた見出し");
+  const local = await readFileJson("pages/ja/home.json");
+  local.body[0].children[0].text = "ローカルで変えた見出し";
+  await writeFileJson("pages/ja/home.json", local);
+  const before = await readFile(join(dir, "pages/ja/home.json"), "utf8");
+  await runPush(dir, deps);
+  assert.equal(last().code, 1, JSON.stringify(last().result));
+  assert.deepEqual(last().result.conflicts.map(({ path }) => path), ["pages/ja/home.json"]);
+  assert.deepEqual(last().result.saved, []);
+  assert.equal(await readFile(join(dir, "pages/ja/home.json"), "utf8"), before);
 });

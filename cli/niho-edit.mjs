@@ -60,7 +60,7 @@ function argsFromCli() {
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
       "url": { type: "string" }, "effective-style": { type: "boolean" }, "publish-site": { type: "boolean" },
-      changed: { type: "boolean" }, all: { type: "boolean" }
+      changed: { type: "boolean" }, all: { type: "boolean" }, html: { type: "string" }
     };
     const args = process.argv.slice(2);
     const stringOptions = new Set(Object.entries(options).filter(([, option]) => option.type === "string").map(([name]) => name));
@@ -398,6 +398,35 @@ async function apiCall(run) {
   }
 }
 
+/** Calls one Studio v2 settings operation and returns the HTTP status with its bounded JSON payload. */
+function createStudioOperation({ origin: baseOrigin, siteId, headers }) {
+  return async function studioOperation(method, name, body, maximumBytes) {
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(siteId)}/operations/${name}`, {
+        method, credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    return { status: response.status, ok: response.ok, payload: await readJson(response.body, maximumBytes) };
+  };
+}
+
+/** The `site.public.read` wire shape with both versions, or null when the response is malformed. */
+function parsePublicSettings(payload) {
+  const { domain, origins } = payload;
+  if (!domain || (domain.hostname !== null && typeof domain.hostname !== "string") || typeof domain.noindex !== "boolean"
+    || !isEditingApiVersion(domain.version) || !origins || !isEditingApiVersion(origins.version)
+    || !Array.isArray(origins.frameOrigins) || !origins.frameOrigins.every((value) => typeof value === "string")
+    || !Array.isArray(origins.resourceOrigins) || !origins.resourceOrigins.every((value) => typeof value === "string")) return null;
+  return {
+    domain: { hostname: domain.hostname, noindex: domain.noindex, version: domain.version },
+    origins: { frameOrigins: origins.frameOrigins, resourceOrigins: origins.resourceOrigins, version: origins.version }
+  };
+}
+
 async function runNormalization(action, values, client, scope) {
   const { runNormalizationCli } = await import("./normalize.mjs");
   const fail = (code, status) => { throw new CliError(code, status); };
@@ -627,6 +656,11 @@ async function main() {
     return;
   }
   if (command !== "preview" && [values.widths, values.compare, values.out].some((value) => value !== undefined)) throw new CliError("invalid_arguments");
+  if (command !== "check" && values.html !== undefined) throw new CliError("invalid_arguments");
+  if (["pull", "check", "push"].includes(command)) {
+    assertCommandOptions(values, command === "check" ? ["all", "html"] : []);
+    if (!values.studio || extra.length) throw new CliError("invalid_arguments");
+  }
   if (command !== "apply" && (values.ops !== undefined || values["cms-bindings"] !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
   if (command !== "normalize" && (values.checkpoint !== undefined || values.approve !== undefined)) throw new CliError("invalid_arguments");
   if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
@@ -656,9 +690,16 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "pages-catalog", "page-change", "changes", "site-history", "rollback", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "pages-catalog", "page-change", "changes", "site-history", "rollback", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register", "pull", "check", "push"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
+  const syncDeps = { origin: baseOrigin, siteId: values.site, apiCall, emit, CliError, parsePublicSettings,
+    validators: { IDENTIFIER, LOCALE, cmsCollection: validCmsCollectionId, cmsItem: validCmsItemId } };
+  if (command === "check") {
+    const { runCheck } = await import("./niho-edit-sync.mjs");
+    await runCheck(pageId, { all: values.all === true, html: values.html }, syncDeps);
+    return;
+  }
   const token = process.env.NIHO_EDIT_TOKEN;
 
   const accessClientId = process.env.CF_ACCESS_CLIENT_ID;
@@ -679,6 +720,13 @@ async function main() {
     "User-Agent": CLI_USER_AGENT, "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
   } : { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
+  const studioOperation = createStudioOperation({ origin: baseOrigin, siteId: values.site, headers });
+
+  if (command === "pull" || command === "push") {
+    const sync = await import("./niho-edit-sync.mjs");
+    await (command === "pull" ? sync.runPull : sync.runPush)(pageId, { ...syncDeps, client, studioOperation });
+    return;
+  }
 
   if (command === "changes") {
     assertCommandOptions(values, []);
@@ -736,35 +784,18 @@ async function main() {
     }
     const operation = embedding ? "pages.embed-register" : reading ? "site.public.read" : "site.public.save";
     const path = embedding ? `${operation}/${encodeURIComponent(pageId)}` : operation;
-    let response;
-    try {
-      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${path}`, {
-        method: reading ? "GET" : embedding ? "POST" : "PUT", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
-        headers: { ...headers, ...(input ? { "Content-Type": "application/json" } : {}) },
-        ...(input ? { body: JSON.stringify(embedding ? { src: input.src, locale: values.locale } : input) } : {})
-      });
-    } catch { throw new CliError("transport_error"); }
-    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
-    const payload = await readJson(response.body, MAX_PAGE_CHANGE_BYTES);
-    if (!response.ok) { emit(payload, response.status, 1, operation); return; }
+    const { status, ok, payload } = await studioOperation(reading ? "GET" : embedding ? "POST" : "PUT", path,
+      input && (embedding ? { src: input.src, locale: values.locale } : input), MAX_PAGE_CHANGE_BYTES);
+    if (!ok) { emit(payload, status, 1, operation); return; }
     if (embedding) {
-      if (response.status !== 201 || typeof payload.refId !== "string" || !MANAGED_EMBED_REF.test(payload.refId)) throw new CliError("invalid_response", response.status);
-      emit({ refId: payload.refId }, response.status, 0, operation);
+      if (status !== 201 || typeof payload.refId !== "string" || !MANAGED_EMBED_REF.test(payload.refId)) throw new CliError("invalid_response", status);
+      emit({ refId: payload.refId }, status, 0, operation);
       return;
     }
-    const { domain, origins } = payload;
-    if (!domain || (domain.hostname !== null && typeof domain.hostname !== "string") || typeof domain.noindex !== "boolean"
-      || !isEditingApiVersion(domain.version) || !origins || !isEditingApiVersion(origins.version)
-      || !Array.isArray(origins.frameOrigins) || !origins.frameOrigins.every((value) => typeof value === "string")
-      || !Array.isArray(origins.resourceOrigins) || !origins.resourceOrigins.every((value) => typeof value === "string")) {
-      throw new CliError("invalid_response", response.status);
-    }
-    const result = {
-      domain: { hostname: domain.hostname, noindex: domain.noindex, version: domain.version },
-      origins: { frameOrigins: origins.frameOrigins, resourceOrigins: origins.resourceOrigins, version: origins.version }
-    };
+    const result = parsePublicSettings(payload);
+    if (!result) throw new CliError("invalid_response", status);
     if (reading) { process.stdout.write(`${JSON.stringify(result)}\n`); return; }
-    emit(result, response.status, 0, operation);
+    emit(result, status, 0, operation);
     return;
   }
 
@@ -773,18 +804,10 @@ async function main() {
     assertCommandOptions(values, saving ? ["json"] : []);
     if (!values.studio || pageId !== undefined || extra.length || saving && !values.json) throw new CliError("invalid_arguments");
     const snapshot = saving ? await inputSiteSeoSnapshot(values.json) : undefined;
-    let response;
-    try {
-      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/site.seo.${saving ? "save" : "read"}`, {
-        method: saving ? "PUT" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
-        headers: { ...headers, ...(saving ? { "Content-Type": "application/json" } : {}) },
-        ...(snapshot ? { body: JSON.stringify({ expectedVersion: snapshot.version, settings: snapshot.settings }) } : {})
-      });
-    } catch { throw new CliError("transport_error"); }
-    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
-    const payload = await readJson(response.body, 64 * 1024);
-    if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
-    emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.seo.save" : "site.seo.read");
+    const { status, ok, payload } = await studioOperation(saving ? "PUT" : "GET", `site.seo.${saving ? "save" : "read"}`,
+      snapshot && { expectedVersion: snapshot.version, settings: snapshot.settings }, 64 * 1024);
+    if (!saving && ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
+    emit(payload, status, ok ? 0 : 1, saving ? "site.seo.save" : "site.seo.read");
     return;
   }
 
@@ -793,18 +816,10 @@ async function main() {
     assertCommandOptions(values, saving ? ["json"] : []);
     if (!values.studio || pageId !== undefined || extra.length || saving && !values.json) throw new CliError("invalid_arguments");
     const snapshot = saving ? await inputSiteRedirectSnapshot(values.json) : undefined;
-    let response;
-    try {
-      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/site.redirects.${saving ? "save" : "read"}`, {
-        method: saving ? "PUT" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
-        headers: { ...headers, ...(saving ? { "Content-Type": "application/json" } : {}) },
-        ...(snapshot ? { body: JSON.stringify({ expectedVersion: snapshot.version, redirects: snapshot.redirects }) } : {})
-      });
-    } catch { throw new CliError("transport_error"); }
-    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
-    const payload = await readJson(response.body, 512 * 1024);
-    if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
-    emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.redirects.save" : "site.redirects.read");
+    const { status, ok, payload } = await studioOperation(saving ? "PUT" : "GET", `site.redirects.${saving ? "save" : "read"}`,
+      snapshot && { expectedVersion: snapshot.version, redirects: snapshot.redirects }, 512 * 1024);
+    if (!saving && ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
+    emit(payload, status, ok ? 0 : 1, saving ? "site.redirects.save" : "site.redirects.read");
     return;
   }
 
