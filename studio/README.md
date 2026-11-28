@@ -20,29 +20,35 @@ Studio Worker の配備、D1 migration、secret、切り戻しの手順です。
 | `STUDIO_ACCESS_ISSUER` / `STUDIO_ACCESS_AUDIENCE` | Studio の Access JWT の `iss` と application の AUD。Worker では `ACCESS_ISSUER` / `ACCESS_AUDIENCE` |
 | `STUDIO_SMOKE_PROJECT_ID` / `STUDIO_SMOKE_SITE_ID` | smoke で開く既存プロジェクトとサイトの ID |
 | `STUDIO_SMOKE_PUBLIC_PATH` | 公開中は代表ページの正規パス。未公開サイトでは `/s/<site-slug>/` を指定し、安全な404を確認。どちらも D1 に登録された対象サイトの slug と照合 |
-| `STUDIO_SMOKE_ACCESS_TOKEN` | 対象プロジェクトのメンバーが取得した短命の Access application JWT |
+| `STUDIO_SMOKE_ACCESS_CLIENT_ID` / `STUDIO_SMOKE_ACCESS_CLIENT_SECRET` | smoke 専用の Access service token の Client ID と Client Secret |
 
-HTTPS origin は末尾に `/` を付けずに指定します。公開ページはリダイレクト後の URL のパスを指定します。JWT は [Cloudflare Access の CLI 手順](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/) で取得できます。shell のトレースを無効にして実行し、JWT は配備用のサブシェル内に保持します。
+HTTPS origin は末尾に `/` を付けずに指定します。公開ページはリダイレクト後の URL のパスを指定します。shell のトレースを無効にして `npm run studio:release` を実行します。`studio:deploy` も同じ配備手順を実行します。
+
+### smoke 用 service token
+
+smoke は人のログインを使わず、Access service token で Studio に接続します。初回と token の期限切れのときだけ次を行います。
+
+1. Cloudflare Zero Trust で smoke 専用の service token を作ります。期限は 1 年を目安にし、Client Secret は非公開設定にだけ保存します。
+2. Studio の Access application に、この token を含む Service Auth のポリシーを追加します。
+3. smoke 対象サイトの owner が委任した `pages.read` の grant を D1 に登録します。読み取りだけを委任し、期限は token と揃えます。
 
 ```sh
-(
-  STUDIO_SMOKE_ACCESS_TOKEN="$(cloudflared access token -app="$STUDIO_ORIGIN")" || exit
-  export STUDIO_SMOKE_ACCESS_TOKEN
-  npm run studio:release
-)
+npx wrangler d1 execute DB --remote --config <非公開の Wrangler 設定> --command \
+  "INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject, expires_at)
+   VALUES ('<client-id>', '<project-id>', '<site-id>', 'pages.read', '<owner の access_subject>', unixepoch() + 365 * 86400)"
 ```
 
-管理済みの JWT を実行環境に渡せる場合は、直接 `npm run studio:release` を実行します。Access service token は Dashboard のメンバー認証に使えません。`studio:deploy` も同じ配備手順を実行します。
+Worker は service token に対し、`/api/edit/` の委任済み操作と版付きのビルドファイル（`/assets/app-*.js`、`/assets/chunks/*`、版付き CSS）だけを返します。Dashboard の画面と API は人の Access ログインに限ります。期限が切れた場合は Zero Trust で token を更新し、grant を登録し直します。
 
 公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、公開 Worker と異なる名前の `workers.dev` Worker だけを有効にします。`PUBLIC_SITES_PREVIEW_ORIGIN` の hostname は Worker 名と一致させます。検証 Worker に custom domain や route は追加しません。D1 migration は適用せず、公開 Worker が使う `0016`〜`0021` と `0023` が適用済みの場合だけ続行します。Studio 専用の `0022`・`0024`〜`0027` が保留中でも公開 Worker の配備は可能です。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。
 
 ## 配備と smoke
 
 1. `npm test`（パッケージの build と全テスト）、`npm run studio:typecheck`、`npm run studio:build` を実行します。
-2. 切り戻し先、Worker secret、Access セッション、Dashboard API のメンバー権限を確認します。現在の Worker は単一 version が 100% のトラフィックを受けている必要があります。
+2. 切り戻し先、Worker secret、service token で読める対象サイトの `pages.read` を確認します。現在の Worker は単一 version が 100% のトラフィックを受けている必要があります。
 3. Wrangler で D1 の適用状況を確認し、配備前に適用できる未適用 migration があれば適用します。再確認で未適用が 0 件になってから配備します。
 4. Wrangler で Worker と静的 asset を配備します。`studio:build` は Studio 用 `dist/public` と公開 Worker 用 `dist/public-sites` を生成し、公開配信用には許可した `/_niho/` のランタイムだけを含めます。
-5. `/api/session`、対象 Dashboard の API と HTML、今回のビルドと一致する entry script と Dashboard の遅延読込 chunkを確認します。smoke path の slug が D1 の対象サイトに登録された slug と一致することも確認します。サイトが公開済みなら代表ページの `og:url`、未公開なら公開 path が no-store と安全ヘッダー付きの空の404を返すことを確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
+5. service token で対象サイトの編集 API の操作一覧を読み、今回のビルドと一致する entry script と Dashboard の遅延読込 chunk を確認します。smoke path の slug が D1 の対象サイトに登録された slug と一致することも確認します。D1 で公開ページがあれば代表ページの `og:url`、なければ公開 path が no-store・nosniff と `default-src 'none'`・`frame-ancestors 'none'` の CSP 付きの404を返すことを確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
 
 失敗したステップを表示し、終了コードは非 0 になります。配備を開始した後の失敗では、切り戻し手順も表示します。
 
