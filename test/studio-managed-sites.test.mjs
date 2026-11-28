@@ -3549,6 +3549,40 @@ testWithD1("Kamakura import accepts a list page at the path of a detail basePath
   assert.equal(JSON.parse(rows[1].bindings_json).detail.basePath, "/posts");
 });
 
+testWithD1("Kamakura import maps a list includes filter on a reference field to the target item ID", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-includes");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = structuredClone(await site.read("cms.schema.read"));
+  schema.collections.find(({ id }) => id === "posts").fields.push({ fieldId: "topics", key: "topics", type: "reference", multiple: true,
+    collectionId: "posts", label: "Topics", placement: "side" });
+  const origin = "https://migration-includes.example.test", siteId = "fixture-includes";
+  const document = (pageId, body = []) => ({ document: { schemaVersion: 1, siteId, pageId, locale: "ja", revision: 1, title: pageId, tokens: {}, body } });
+  const list = (includes) => ({ ...document("list-source", [{ type: "component", id: "cms", block: "KamakuraCmsList", props: {} }]),
+    sourceBlocks: { KamakuraCmsList: { props: {} } },
+    replacements: [{ nodeId: "cms", kind: "cms-list", body: [{ type: "element", id: "card", tag: "article", children: [
+      { type: "element", id: "heading", tag: "h2", children: [{ type: "text", text: "題名" }] }] }],
+      binding: { templateNodeId: "card", collectionId: "posts", limit: 6, filter: { fieldId: "topics", includes },
+        fields: [{ nodeId: "heading", fieldId: "title", target: "text" }] } }] });
+  const item = (itemId, title, topics = []) => ({ collectionId: "posts", itemId, published: { ...values(title, itemId), topics }, draft: { ...values(title, itemId), topics } });
+  const source = (includes) => ({ formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
+    pages: [
+      { sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public", published: document("home-source"), draft: document("home-source") },
+      { sourceUrl: origin + "/topic-a", sourcePageId: "list-source", path: "/topic-a", locale: "ja", visibility: "public", published: list(includes), draft: list(includes) }
+    ],
+    cms: { schema: { ...schema, siteId }, items: [item("tag-a", "Tag A"), item("post-1", "Post 1", ["tag-a"])] }, redirects: [], scheduled: [] });
+  const prepare = (includes) => {
+    const bytes = Buffer.from(JSON.stringify(source(includes)));
+    return prepareKamakuraSiteImport(bytes, createHash("sha256").update(bytes).digest("hex"), target);
+  };
+  const prepared = await prepare("tag-a");
+  const tagA = prepared.mapping.cmsItems.find(({ sourceItemId }) => sourceItemId === "tag-a").itemId;
+  assert.notEqual(tagA, "tag-a");
+  const listPage = prepared.pages.find(({ path }) => path === "/topic-a");
+  for (const bindings of [listPage.draftCmsBindings, listPage.publishedCmsBindings]) assert.equal(bindings.lists[0].filter.includes, tagA);
+  assert.deepEqual(prepared.cmsItems.find(({ itemId }) => itemId === "post-1").draft.topics, [tagA], "the filter and the reference values use the same target ID");
+  await assert.rejects(() => prepare("missing-tag"), /missing CMS item mapping/u);
+});
+
 const frameElement = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
 const frameText = (text) => [{ type: "text", text }];
 const jaFrame = () => ({ header: [frameElement("site-header", "header", [
