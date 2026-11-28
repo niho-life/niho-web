@@ -16,7 +16,6 @@ import { validatePagePath } from "../dist/pages.js";
 import { fail, identifier, isSafeHttpsOrigin, keys, line, localeCode, parseAssetReference, record } from "../dist/validation-utils.js";
 import { migrateKamakuraBlocks } from "./migrate-kamakura-blocks.mjs";
 
-const IMPORT_PAGE_DOCUMENT_MAX_BYTES = 200 * 1024;
 const IMPORT_PAGE_DOCUMENT_HARD_MAX_BYTES = 2 * 1024 * 1024;
 
 function sourceAssetUrl(raw, sourceOrigin) {
@@ -111,9 +110,6 @@ function normalizeImportedPage(document, path) {
   }
   if (verifyNormalization(input, [normalized]).status !== "equivalent") fail(path, "lossless page normalization could not be verified");
   const afterBytes = Buffer.byteLength(JSON.stringify(normalized));
-  if (afterBytes > IMPORT_PAGE_DOCUMENT_MAX_BYTES) {
-    fail(path, `page document exceeds 200 KiB after lossless normalization (${afterBytes} bytes)`);
-  }
   return { document: normalized, documentBytes: { before: beforeBytes, after: afterBytes, losslessOperations: operations.length } };
 }
 

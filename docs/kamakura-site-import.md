@@ -26,7 +26,7 @@ Studio で検証用の新規 Project を作成し、移行元の原文 locale �
 
 フォーム接続が必要な場合は別の作業ファイルを `--embed-connections` で渡す。内容は `{ sourceUrl, refId, src }` の配列。`refId` は本文変換で指定する接続 ID と一致させ、`src` は検証 origin と `/s/{slug}` 以下の対象ページに対して発行された接続 URL を使う。あらかじめ対象サイトの公開配信設定へ埋め込み origin を登録する。接続 URL は Studio の既存のページ接続設定に保存され、PageDocument と対応表には `src` を含めない。[ManagedEmbed の契約](managed-embed-contract.md)
 
-取込前に、公開版と下書き版の各 PageDocument を `@niho/web/normalize` で分析し、描画同等性を確認できる lossless な文字スタイル集約と冗長な幅別指定の削除だけを適用する。入力exportは変更しない。対応表には各版の正規化前後のUTF-8 byte数と適用操作数を記録する。lossless 正規化後も 200 KiB を超える文書、または正規化の描画同等性を確認できない文書があれば、取込計画を停止する。共通部品・token などへの置き換えが必要な文書は、対象を絞って移行内容を整理してから再度 preflight する。2 MiB は処理上限として別に維持する。
+取込前に、公開版と下書き版の各 PageDocument を `@niho/web/normalize` で分析し、描画同等性を確認できる lossless な文字スタイル集約と冗長な幅別指定の削除だけを適用する。入力exportは変更しない。対応表には各版の正規化前後のUTF-8 byte数と適用操作数を記録する。正規化の描画同等性を確認できない文書があれば、取込計画を停止する。文書の大きさは処理上限の 2 MiB だけを確かめ、それより小さい文書は大きさで止めない。
 
 ```sh
 npm run build
