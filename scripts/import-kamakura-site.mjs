@@ -95,6 +95,19 @@ function mapCmsValues(raw, collection, bySource, byUrl, byItem, path, sourceOrig
   return parseCmsValues(values, collection, path);
 }
 
+// 一覧の `includes` が参照の field を絞るときは、CMS の参照の値と同じ対応で移行先の項目 ID に直す。select の option id はそのまま。
+function mapListFilterReferences(bindings, schema, byItem, path) {
+  if (!schema || !bindings.lists.some((list) => list.filter && "includes" in list.filter)) return bindings;
+  return { ...bindings, lists: bindings.lists.map((list, index) => {
+    if (!list.filter || !("includes" in list.filter)) return list;
+    const field = cmsCollection(schema, list.collectionId).fields.find(({ fieldId }) => fieldId === list.filter.fieldId);
+    if (field?.type !== "reference") return list;
+    const includes = byItem.get(cmsItemKey({ collectionId: field.collectionId, itemId: list.filter.includes }));
+    if (!includes) fail(`${path}.cmsBindings.lists[${index}].filter.includes`, "missing CMS item mapping");
+    return { ...list, filter: { ...list.filter, includes } };
+  }) };
+}
+
 function normalizeImportedPage(document, path) {
   const beforeBytes = Buffer.byteLength(JSON.stringify(document));
   if (beforeBytes > IMPORT_PAGE_DOCUMENT_HARD_MAX_BYTES) fail(path, "page document exceeds hard size limit");
@@ -176,14 +189,14 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
   }
   const paths = new Map(rawPages.map(({ sourceUrl, path }) => [sourceUrl, path])), pageMap = [], pages = [];
   const rawCms = input.cms == null ? null : record(input.cms, "source.cms");
-  const cmsEntries = [], cmsItems = [], itemMap = [];
+  const cmsEntries = [], cmsItems = [], itemMap = [], targetItemIds = new Map();
   let schema;
   if (rawCms) {
     keys(rawCms, ["schema", "items"], "source.cms");
     const sourceSchema = parseCmsSchema(rawCms.schema);
     if (sourceSchema.siteId !== sourceId) fail("source.cms.schema", "source site mismatch");
     schema = parseCmsSchema({ ...sourceSchema, siteId: target.siteId, schemaRevision: `import_${sourceDigest}`, retiredFields: [] });
-    const sourceItems = cmsArray(rawCms.items, "source.cms.items", 500), targetItemIds = new Map();
+    const sourceItems = cmsArray(rawCms.items, "source.cms.items", 500);
     for (const [index, value] of sourceItems.entries()) {
       const at = `source.cms.items[${index}]`, raw = record(value, at);
       keys(raw, ["collectionId", "itemId", "published", "draft", "translations"], at);
@@ -231,7 +244,7 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
           ...(schema ? { cmsSchema: schema } : {}), target: { ...scope, version: "import" } });
         if (result.status !== "ready") fail(at, result.blocked.map(({ nodeId, reason }) => `${nodeId}: ${reason}`).join(", "));
         ready = result.snapshot.document;
-        cmsBindings = result.cmsBindings;
+        cmsBindings = result.cmsBindings && mapListFilterReferences(result.cmsBindings, schema, targetItemIds, at);
       } else {
         ready = parsePageDocument({ ...source.resolved, ...scope }, managedBlockContracts);
       }
