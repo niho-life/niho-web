@@ -68,3 +68,17 @@ lintは継続利用しますが、役割を保存データを変更しない軽�
 - 新たに描画・生成するページは現在のpublished stylesを共有し、過去の履歴snapshotを変更しない。既存Studio-native HTMLの再生成は#527で接続する。
 - site/project scopeを各層で検証し、別サイトの参照を書き換えない。
 - Studio-native managed siteのstyle snapshotはR2のimmutable object、版pointerとdigestはD1で保持する。snapshotは256 KiBまで、参照中の履歴はmanaged CMSと同じ100 MiB上限に従う。
+
+## 共通の枠（`frame`）
+
+`SiteStyles.frame` は、言語ごとの共通のヘッダー・フッターとページ全体の包みです。版・下書きと公開・`site-styles` の「未公開の変更」・`publish --site` と `--changed`・`site/styles.json` の同期は、tokens・textStyles と同じ仕組みです。
+
+```ts
+type SiteFrame = { [locale: string]: { header: PageNode[]; footer: PageNode[]; tokens?; textStyles?; layout?: NodeStyle } };
+```
+
+- header・footer の節点は、ページの節点と同じ検証を通ります（コンポーネント・インスタンスは使えません）。枠の tokens・textStyles は、サイトの tokens の上に重ねて検証します。節点の ID は60文字までです。
+- 公開時、CMS の結び付けを解決した後の本文を、`layout` を持つ `div` の中の `main` に入れ、前に header、後に footer を並べます。枠の節点の ID には接頭辞（`nwframe-h-`・`nwframe-f-`）が付きます。tokens・textStyles は枠の分を足し、同名ならページを優先します。その言語の枠が無ければ、HTML は変わりません。
+- 編集は `site.styles.edit` の `{ type: "frame", locale, value }` で、その言語の枠を丸ごと置き換えます（`value: null` で外す）。`siteStylesEdits` は `frame` の差分も作ります。名前の変更・削除の使用中判定は、枠を対象にしません。
+- GUI のスタイル・サイト設定は `frame` を表示も変更もせず、保存しても消しません。枠は `niho-edit styles` か `site/styles.json` で直します。
+- 保存できる大きさは、`frame` を含めて 1 MiB までです。

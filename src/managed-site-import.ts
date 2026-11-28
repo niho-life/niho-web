@@ -4,6 +4,8 @@ import { assetKey } from "./assets.js";
 import { parseCmsPublicAssets } from "./cms-v2-assets.js";
 import { collectCmsLocalizationUnits, createCmsLocalizationOverlay, editCmsLocalizedValue, reviewCmsLocalizedValue, STUDIO_CMS_LOCALIZATION_OPTIONS } from "./cms-v2-localization.js";
 import { cmsTimestamp } from "./cms-v2-release.js";
+import { parseSiteStylesWithFrame } from "./site-frame.js";
+import type { SiteFrame } from "./site-styles.js";
 import { managedBlockContracts } from "./managed-embed-block.js";
 import { parseManagedSiteRedirects } from "./managed-site-redirects.js";
 import { cmsArray, cmsId, parseCmsSchema, uniqueCmsKeys, type CmsItemRevision, type CmsSchema } from "./cms-v2-schema.js";
@@ -43,7 +45,7 @@ export function importPublicAssetUrl(value: unknown, path: string): string {
 
 export function parseSiteImportPlan(input: unknown, siteId: string) {
   const plan = record(input, "plan");
-  keys(plan, ["sourceOrigin", "sourceSiteId", "locale", "assets", "assetVariants", "pages", "cms", "redirects", "scheduled"], "plan");
+  keys(plan, ["sourceOrigin", "sourceSiteId", "locale", "assets", "assetVariants", "pages", "cms", "redirects", "scheduled", "frame"], "plan");
   const { sourceOrigin } = plan;
   if (!isSafeHttpsOrigin(sourceOrigin)) fail("plan.sourceOrigin", "expected an HTTPS origin");
   const locale = localeCode(plan.locale, "plan.locale"), sourceSiteId = identifier(plan.sourceSiteId, "plan.sourceSiteId");
@@ -102,6 +104,8 @@ export function parseSiteImportPlan(input: unknown, siteId: string) {
   }) : [];
   const itemKeys = items.map(({ collectionId, itemId }) => `${collectionId}/${itemId}`);
   uniqueCmsKeys(itemKeys, "plan.cms.items");
+  // 共通の枠は、取込の確定でサイト共通スタイルの下書きと公開の両方へ書く。各言語の枠は自己完結（自前の tokens）とする。
+  const frame = plan.frame === undefined ? undefined : parseSiteStylesWithFrame({ frame: plan.frame as SiteFrame }).frame;
   const scheduled = cmsArray(plan.scheduled, "plan.scheduled", 1000).map((input, index) => {
     const at = `plan.scheduled[${index}]`, entry = record(input, at);
     if (entry.kind === "page") {
@@ -117,7 +121,7 @@ export function parseSiteImportPlan(input: unknown, siteId: string) {
     return { kind: "cms" as const, collectionId, itemId, at: cmsTimestamp(entry.at, `${at}.at`) };
   });
   return { sourceOrigin, sourceSiteId, locale, pages, assets: assets.map((entry, index) => ({ ...entry, target: parsedAssets[index]! })), assetVariants,
-    cms: schema ? { schema, items } : null, redirects, scheduled };
+    cms: schema ? { schema, items } : null, redirects, scheduled, ...(frame ? { frame } : {}) };
 }
 
 export function parseSiteImportTarget(input: unknown) {

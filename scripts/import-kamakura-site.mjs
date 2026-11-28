@@ -118,7 +118,7 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
   if (!SITE_IMPORT_DIGEST.test(expectedDigest ?? "") || sourceDigest !== expectedDigest) throw new Error("source_checksum_mismatch");
   const target = parseSiteImportTarget(targetValue);
   const input = record(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), "source");
-  keys(input, ["formatVersion", "siteId", "origin", "locale", "pages", "assets", "assetVariants", "cms", "redirects", "scheduled"], "source");
+  keys(input, ["formatVersion", "siteId", "origin", "locale", "pages", "assets", "assetVariants", "cms", "redirects", "scheduled", "frame"], "source");
   const sourceId = identifier(input.siteId, "source.siteId"), locale = localeCode(input.locale, "source.locale");
   if (input.formatVersion !== 1 || !isSafeHttpsOrigin(input.origin) || sourceId === target.siteId
     || new URL(input.origin).hostname === new URL(target.verificationOrigin).hostname) fail("source", "invalid source scope");
@@ -255,9 +255,22 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
     pageMap.push({ sourceUrl: page.sourceUrl, pageId, locale: page.locale, path: page.path,
       documentBytes: { published: published?.documentBytes ?? null, draft: draft.documentBytes } });
   }
+  // 共通の枠（任意）。各言語の header・footer は、ページと同じ素材・リンクの対応で移行先の形に直す。
+  let frame;
+  if (input.frame !== undefined) {
+    frame = {};
+    for (const [frameLocale, value] of Object.entries(record(input.frame, "source.frame"))) {
+      const at = `source.frame.${frameLocale}`, entry = record(value, at);
+      keys(entry, ["header", "footer", "tokens", "textStyles", "layout"], at);
+      const part = (name) => mapPage(parsePageDocument({ schemaVersion: 1, siteId: "frame", pageId: `frame-${name}`, locale: localeCode(frameLocale, at),
+        revision: 1, title: "Frame", tokens: entry.tokens ?? {}, ...(entry.textStyles ? { textStyles: entry.textStyles } : {}), body: entry[name] },
+      managedBlockContracts), bySource, byUrl, publicAssetUrls, paths, input.origin).body;
+      frame[frameLocale] = { ...entry, header: part("header"), footer: part("footer") };
+    }
+  }
   const plan = parseSiteImportPlan({ sourceOrigin: input.origin, sourceSiteId: sourceId, locale, assets, assetVariants,
     pages: await Promise.all(pages.map(async (page) => ({ sourceUrl: page.sourceUrl, digest: await siteImportDigest(page) }))),
-    cms: schema ? { schema, items: cmsEntries } : null, redirects: input.redirects ?? [], scheduled: input.scheduled ?? [] }, target.siteId);
+    cms: schema ? { schema, items: cmsEntries } : null, redirects: input.redirects ?? [], scheduled: input.scheduled ?? [], ...(frame ? { frame } : {}) }, target.siteId);
   for (const { fromPath } of plan.redirects) if (paths.has(new URL(fromPath, input.origin).href) || pages.some(({ path }) => path === fromPath)) {
     fail("source.redirects", "redirect conflicts with an imported page");
   }

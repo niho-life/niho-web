@@ -16,6 +16,7 @@ import { localizationReleaseContext, planCmsLocalizationRelease } from "./manage
 import { cmsLocalizationTargetLocale } from "./managed-cms-localization.js";
 import { releaseContext } from "./managed-cms-release.js";
 import { storePageSource } from "./managed-page-source.js";
+import { putManagedSiteStyles } from "./managed-site-styles.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 type Target = ReturnType<typeof parseSiteImportTarget>;
@@ -346,6 +347,19 @@ async function finalizeImport(scope: Scope, verified: boolean) {
   if (site ? site.state.current?.id.startsWith(releasePrefix)
     : await pointerMatches("page.published_revision = json_extract(entry.value, '$.publishedRevision')")) return receipt;
   if (!verified) return { error: "verification_target_required" };
+  // 共通の枠は、ページの公開版と同じ確定で、サイト共通スタイルの下書きと公開の両方へ書く。編集済みのスタイルは上書きしない。
+  let frameStyles: Awaited<ReturnType<typeof putManagedSiteStyles>> | null = null;
+  if (plan.frame) {
+    const state = await db.prepare("SELECT draft_version, published_version FROM managed_site_styles WHERE site_id = ?1")
+      .bind(target.siteId).first<{ draft_version: string; published_version: string }>();
+    if (!state || state.draft_version !== "initial" || state.published_version !== "initial") return conflict();
+    frameStyles = await putManagedSiteStyles(store, target.siteId, { frame: plan.frame });
+  }
+  const setFrame = (guard: string) => `UPDATE managed_site_styles SET draft_version = ?8, draft_key = ?9, draft_digest = ?10,
+      published_version = ?8, published_key = ?9, published_digest = ?10, retained_bytes = retained_bytes + ?11,
+      updated_at = unixepoch(), updated_by_subject = ?3
+    WHERE site_id = ?1 AND draft_version = 'initial' AND published_version = 'initial' AND ${guard}`;
+  const frameValues = frameStyles ? [frameStyles.version, frameStyles.key, frameStyles.digest, frameStyles.bytes] as const : null;
   // Every imported page must still be the imported draft: a later edit means the plan no longer describes the site.
   const unchanged = `(SELECT count(*) FROM json_each(?6) AS entry JOIN managed_pages AS page ON page.site_id = ?1
       AND page.page_id = json_extract(entry.value, '$.pageId') AND page.locale = json_extract(entry.value, '$.locale')
@@ -354,10 +368,14 @@ async function finalizeImport(scope: Scope, verified: boolean) {
     FROM json_each(${entries}) AS entry WHERE managed_pages.site_id = ?1 AND managed_pages.page_id = json_extract(entry.value, '$.pageId')
       AND managed_pages.locale = json_extract(entry.value, '$.locale') AND ${guard}`;
   if (!site) {
-    const result = await db.prepare(setPointers("?6", `${verificationFence} AND ${runFence} AND ${unchanged}`))
-      .bind(...guardValues(scope), pointers, published.length).all();
-    if (!result.success) throw new Error("migration finalize transaction failed");
-    return result.meta?.changes === published.length ? receipt : conflict();
+    const guard = `${verificationFence} AND ${runFence} AND ${unchanged}`;
+    // 枠は、ページの公開版を確定する前の「未確定」の条件で先に書く（同じバッチで一緒に確定する）。
+    const results = await db.batch([
+      ...(frameValues ? [db.prepare(setFrame(guard)).bind(...guardValues(scope), pointers, published.length, ...frameValues)] : []),
+      db.prepare(setPointers("?6", guard)).bind(...guardValues(scope), pointers, published.length)
+    ]);
+    if (results.some((result) => !result.success)) throw new Error("migration finalize transaction failed");
+    return results.at(-1)?.meta?.changes === published.length && (!frameValues || results[0]?.meta?.changes === 1) ? receipt : conflict();
   }
   if (site.state.current || site.state.localizedReleases || await siteImportDigest(site.state.schema) !== await siteImportDigest(plan.cms!.schema)) return conflict();
   const pins = items.flatMap(({ collectionId, itemId, publishedRevision }) =>
@@ -408,6 +426,11 @@ async function finalizeImport(scope: Scope, verified: boolean) {
       .bind(...guardValues(scope), pointers, published.length, site.generation, generation, JSON.stringify(state)),
     db.prepare(setPointers("?3", "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?1 AND generation = ?2)"))
       .bind(target.siteId, generation, pointers),
+    ...(frameValues ? [db.prepare(`UPDATE managed_site_styles SET draft_version = ?3, draft_key = ?4, draft_digest = ?5,
+        published_version = ?3, published_key = ?4, published_digest = ?5, retained_bytes = retained_bytes + ?6, updated_at = unixepoch()
+      WHERE site_id = ?1 AND draft_version = 'initial' AND published_version = 'initial'
+        AND EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?1 AND generation = ?2)`)
+      .bind(target.siteId, generation, ...frameValues)] : []),
     ...localized.revisions.map((item) => db.prepare(`INSERT INTO managed_cms_revisions (site_id, revision, collection_id, item_id, locale, schema_revision)
       SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${guard}`)
       .bind(generation, target.siteId, item.revision, item.collectionId, item.itemId, targetLocale, item.schemaRevision)),

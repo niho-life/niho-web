@@ -4,6 +4,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { isEditingApiVersion, parseEditingPageDocumentEnvelope } from "../dist/editing-client.js";
 import { siteStylesEdits } from "../dist/editing-site-styles.js";
 import { parseSiteStyles } from "../dist/site-styles.js";
+import { parseSiteStylesWithFrame } from "../dist/site-frame.js";
 import { parseManagedSiteSeoSettings } from "../dist/managed-seo-settings.js";
 import { parseManagedSiteRedirects } from "../dist/managed-site-redirects.js";
 
@@ -413,7 +414,7 @@ async function validateFiles(deps, root, targets, { all, html }) {
         if (!isPlainPublicValue(value)) result.errors.push(problem("invalid_public", "domain と origins の形式が正しくありません"));
         break;
       case "styles":
-        try { if (!isRecord(value)) throw new TypeError("styles must be an object"); parseSiteStyles(value); }
+        try { if (!isRecord(value)) throw new TypeError("styles must be an object"); parseSiteStylesWithFrame(value); }
         catch (error) { result.errors.push(problem("invalid_styles", messageOf(error))); }
         break;
     }
@@ -623,7 +624,7 @@ async function pushStyles(deps, item, out, settle) {
   const current = await deps.apiCall(() => deps.client.readSiteStyles(timeout()));
   const serverHash = hashOf(current.draft.styles);
   if (current.draft.version !== entry.version && serverHash !== entry.hash) { out.conflicts.push({ path, reason: "version_conflict" }); return; }
-  const edits = siteStylesEdits(current.draft.styles, parseSiteStyles(local.value));
+  const edits = siteStylesEdits(current.draft.styles, parseSiteStylesWithFrame(local.value));
   if (!edits.length) {
     await settle(item, { kind: "styles", version: current.draft.version, hash: serverHash }, current.draft.styles, out.unchanged);
     return;

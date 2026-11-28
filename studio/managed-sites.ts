@@ -1203,7 +1203,7 @@ async function managedPublicationSnapshot(store: CmsStore, actor: ManagedActor, 
     changes.push({ kind: "shared", id: "public-domain", label: "公開ドメイン", appliesToAllPages: true });
   }
   if (manifest?.siteStylesVersion !== styles.draft.version) {
-    changes.push({ kind: "shared", id: "site-styles", label: "サイト共通スタイル", appliesToAllPages: true });
+    changes.push({ kind: "shared", id: "site-styles", label: "サイト共通スタイルと共通の枠", appliesToAllPages: true });
   }
   const version = `changes.${await digest({ publicationVersion: state.publication_version, manifestKey: state.manifest_key,
     catalogVersion: state.page_catalog_version, policyVersion: state.public_policy_version, domainVersion: state.public_domain_version,

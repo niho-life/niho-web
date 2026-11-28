@@ -1,4 +1,5 @@
-import { parseSiteStyles, type SiteStyles, type SiteStylesSnapshot } from "../src/site-styles.js";
+import type { SiteStyles, SiteStylesSnapshot } from "../src/site-styles.js";
+import { parseSiteStylesWithFrame } from "../src/site-frame.js";
 import { renameSiteStyle, type EditingSiteStylesEditRequest, type EditingSiteStylesHostAdapter, type EditingSiteStylesPublishRequest,
   type EditingSiteStylesPublishResult } from "../src/editing-site-styles.js";
 import type { CmsStore } from "./managed-cms-store.js";
@@ -6,7 +7,8 @@ import type { ManagedActor, ManagedD1 } from "./managed-sites.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 
 const INITIAL_VERSION = "initial";
-const MAX_STYLE_BYTES = 256 * 1024;
+// 共通の枠（frame）の日英の header・footer も同じ版に入るので、スタイルだけの時より大きく取る。
+const MAX_STYLE_BYTES = 1024 * 1024;
 const MAX_RETAINED_STYLE_BYTES = 100 * 1024 * 1024;
 const DIGEST = /^[0-9a-f]{64}$/u;
 const VERSION = /^style\.[0-9a-f-]{36}$/u;
@@ -75,12 +77,12 @@ async function scopedState(db: ManagedD1, access: Access): Promise<StyleState | 
 
 async function readPointer(store: CmsStore, siteId: string, version: string, key: string | null, digest: string | null): Promise<SiteStyles> {
   const pointer = statePointer(siteId, version, key, digest);
-  if (pointer.key === null) return parseSiteStyles(EMPTY_STYLES);
+  if (pointer.key === null) return parseSiteStylesWithFrame(EMPTY_STYLES);
   const object = await store.bucket.get(pointer.key);
   if (!object) throw new Error("managed site styles unavailable");
   const bytes = new Uint8Array(await object.arrayBuffer());
   if (bytes.byteLength > MAX_STYLE_BYTES || await sha256(bytes) !== pointer.digest) throw new Error("managed site styles digest mismatch");
-  const styles = parseSiteStyles(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as SiteStyles);
+  const styles = parseSiteStylesWithFrame(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as SiteStyles);
   if (new TextEncoder().encode(JSON.stringify(styles)).byteLength > MAX_STYLE_BYTES) throw new Error("managed site styles exceed size limit");
   return styles;
 }
@@ -136,8 +138,14 @@ async function pageUsages(store: CmsStore, access: Access, styleKind: "token" | 
 }
 
 function applyEdits(current: SiteStyles, input: EditingSiteStylesEditRequest): { readonly styles: SiteStyles; readonly changed: boolean } {
-  let styles: SiteStyles = parseSiteStyles(current);
+  let styles: SiteStyles = parseSiteStylesWithFrame(current);
   for (const edit of input.edits) {
+    if (edit.type === "frame") {
+      const { frame: previous, ...rest } = styles, frame = { ...previous };
+      if (edit.value === null) delete frame[edit.locale]; else frame[edit.locale] = edit.value;
+      styles = Object.keys(frame).length ? { ...rest, frame } : rest;
+      continue;
+    }
     if (edit.type === "set") {
       if (edit.styleKind === "token") {
         const before = styles.tokens?.[edit.name];
@@ -169,8 +177,8 @@ function applyEdits(current: SiteStyles, input: EditingSiteStylesEditRequest): {
   return { styles, changed: JSON.stringify(styles) !== JSON.stringify(current) };
 }
 
-async function putStyles(store: CmsStore, siteId: string, styles: SiteStyles): Promise<{ readonly version: string; readonly key: string; readonly digest: string; readonly bytes: number }> {
-  const json = JSON.stringify(parseSiteStyles(styles)), bytes = new TextEncoder().encode(json);
+export async function putManagedSiteStyles(store: CmsStore, siteId: string, styles: SiteStyles): Promise<{ readonly version: string; readonly key: string; readonly digest: string; readonly bytes: number }> {
+  const json = JSON.stringify(parseSiteStylesWithFrame(styles)), bytes = new TextEncoder().encode(json);
   if (bytes.byteLength > MAX_STYLE_BYTES) throw new Error("managed site styles exceed size limit");
   const version = `style.${crypto.randomUUID()}`, key = styleKey(siteId, version), digest = await sha256(bytes);
   if (await store.bucket.put(key, json, { onlyIf: new Headers({ "If-None-Match": "*" }) }) === null) {
@@ -206,8 +214,8 @@ export function managedSiteStylesAdapter(store: CmsStore, projectId: string,
           .map(([styleName]) => ({ kind: "siteStyle" as const, id: siteId, path: `textStyles.${styleName}` }));
         if (styleUsages.length) return { status: "referenced", usages: styleUsages };
       }
-      const styles = parseSiteStyles(applied.styles);
-      const object = await putStyles(store, siteId, styles);
+      const styles = parseSiteStylesWithFrame(applied.styles);
+      const object = await putManagedSiteStyles(store, siteId, styles);
       if (state.retained_bytes + object.bytes > MAX_RETAINED_STYLE_BYTES) throw new Error("managed site styles retained size limit exceeded");
       const scope = accessSql(access, "managed_site_styles", 8);
       const result = await store.db.prepare(`UPDATE managed_site_styles

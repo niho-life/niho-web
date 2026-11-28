@@ -67,7 +67,7 @@ niho-edit --studio --origin https://studio.example --site site-id publish --chan
 | `site/seo.json` | `site-seo-read` の `settings` |
 | `site/redirects.json` | `site-redirects-read` の `redirects` 配列 |
 | `site/public.json` | `{ domain: { hostname, noindex }, origins: { frameOrigins, resourceOrigins } }` |
-| `site/styles.json` | `styles read` の `draft.styles` |
+| `site/styles.json` | `styles read` の `draft.styles`（共通の枠 `frame` を含む。[site-styles-contract.md](site-styles-contract.md)） |
 | `.niho/state.json` | CLI だけが書く。各ファイルの種別・識別子・版・内容の hash・CMS 保存の操作 ID |
 | `.niho/context.json` | `check` が使う読取専用の文脈（ブレークポイント設定、公開パス一覧） |
 

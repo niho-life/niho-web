@@ -1,8 +1,12 @@
-import type { DesignToken, PageDocument, PageNode, TextStyle } from "./types.js";
+import type { DesignToken, NodeStyle, PageDocument, PageNode, TextStyle } from "./types.js";
 import { parseTextStyles, parseTokens } from "./style-values.js";
 
 /** サイト設定のスタイル部分。ページ JSON へ継承値を書き戻さない。 */
-export type SiteStyles = { tokens?: Record<string, DesignToken>; textStyles?: Record<string, TextStyle> };
+export type SiteStyles = { tokens?: Record<string, DesignToken>; textStyles?: Record<string, TextStyle>; frame?: SiteFrame };
+
+/** 言語ごとの共通の枠。header・footer は公開時に全ページの本文の前後へ並べる。検証は parseSiteStylesWithFrame（site-frame.ts）。 */
+export type SiteFrameLocale = { header: PageNode[]; footer: PageNode[]; tokens?: Record<string, DesignToken>; textStyles?: Record<string, TextStyle>; layout?: NodeStyle };
+export type SiteFrame = Record<string, SiteFrameLocale>;
 
 /** Identifies the draft snapshot consumed by the one-time normalizer; pages do not persist it. */
 export type SiteStylesRevision = { readonly stage: "draft"; readonly version: string };
@@ -12,7 +16,7 @@ export type SiteStylesSnapshot = {
   readonly published: { readonly version: string; readonly styles: SiteStyles };
 };
 
-/** サイト単体で解決できる参照だけを受け付ける。ページの値による補完は禁止。 */
+/** サイト単体で解決できる参照だけを受け付ける。ページの値による補完は禁止。frame は扱わない（保存と編集の境界は parseSiteStylesWithFrame）。 */
 export function parseSiteStyles(input: SiteStyles): SiteStyles {
   const tokens = input.tokens === undefined ? undefined : parseTokens(input.tokens, "$.site.tokens");
   const textStyles = input.textStyles === undefined ? undefined : parseTextStyles(input.textStyles, tokens ?? {}, "$.site.textStyles");

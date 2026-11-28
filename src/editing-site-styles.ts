@@ -1,4 +1,5 @@
-import { parseSiteStyles, type SiteStyles, type SiteStylesSnapshot } from "./site-styles.js";
+import { parseSiteStyles, type SiteFrameLocale, type SiteStyles, type SiteStylesSnapshot } from "./site-styles.js";
+import { parseSiteStylesWithFrame } from "./site-frame.js";
 import type { DesignToken, TextStyle } from "./types.js";
 import { identifier, keys, line, localeCode, record } from "./validation-utils.js";
 import { EDITOR_RELEASE_WARNING_CODES, type EditorReleaseWarning } from "./editor-types.js";
@@ -13,7 +14,9 @@ export type EditingSiteStylesEdit =
   | { readonly type: "set"; readonly styleKind: "token"; readonly name: string; readonly value: DesignToken }
   | { readonly type: "set"; readonly styleKind: "textStyle"; readonly name: string; readonly value: TextStyle }
   | { readonly type: "delete"; readonly styleKind: EditingSiteStyleKind; readonly name: string }
-  | { readonly type: "rename"; readonly styleKind: EditingSiteStyleKind; readonly from: string; readonly to: string };
+  | { readonly type: "rename"; readonly styleKind: EditingSiteStyleKind; readonly from: string; readonly to: string }
+  /** その言語の共通の枠を置き換える。null は枠を外す。中身は保存時に全体で検証する。 */
+  | { readonly type: "frame"; readonly locale: string; readonly value: SiteFrameLocale | null };
 
 export type EditingSiteStylesUsage = {
   readonly kind: "page" | "locale" | "component" | "presentation" | "shared" | "template" | "siteStyle";
@@ -50,8 +53,8 @@ const styleName = (value: unknown, path: string) => identifier(value, path);
 export const editingSiteStylesVersion = (value: unknown, path: string): string => line(value, path, VERSION_LIMIT);
 
 function checkedStyles(value: unknown, path: string): SiteStyles {
-  const source = record(value, path); keys(source, ["tokens", "textStyles"], path);
-  return parseSiteStyles(source as SiteStyles);
+  const source = record(value, path); keys(source, ["tokens", "textStyles", "frame"], path);
+  return parseSiteStylesWithFrame(source as SiteStyles);
 }
 
 export function parseEditingSiteStylesSnapshot(value: unknown): SiteStylesSnapshot {
@@ -79,6 +82,11 @@ function parsedSet(source: Record<string, unknown>, path: string): EditingSiteSt
 
 function parseEdit(value: unknown, index: number): EditingSiteStylesEdit {
   const path = `$input.edits[${index}]`, source = record(value, path);
+  if (source.type === "frame") {
+    keys(source, ["type", "locale", "value"], path);
+    return { type: "frame", locale: localeCode(source.locale, `${path}.locale`),
+      value: source.value === null ? null : record(source.value, `${path}.value`) as unknown as SiteFrameLocale };
+  }
   if (source.type === "set") { keys(source, ["type", "styleKind", "name", "value"], path); return parsedSet(source, path); }
   if (source.styleKind !== "token" && source.styleKind !== "textStyle") throw new TypeError(`${path}.styleKind: invalid style kind`);
   if (source.type === "delete") {
@@ -175,6 +183,10 @@ export function parseEditingSiteStylesPublishResponse(value: unknown, expectedVe
 
 /** Rename one local definition and its references inside the draft style library. */
 export function renameSiteStyle(styles: SiteStyles, styleKind: EditingSiteStyleKind, fromValue: string, toValue: string): SiteStyles {
+  const renamed = renameStyleDefinitions(styles, styleKind, fromValue, toValue);
+  return styles.frame ? { ...renamed, frame: styles.frame } : renamed;
+}
+function renameStyleDefinitions(styles: SiteStyles, styleKind: EditingSiteStyleKind, fromValue: string, toValue: string): SiteStyles {
   const current = parseSiteStyles(styles), from = styleName(fromValue, "$rename.from"), to = styleName(toValue, "$rename.to");
   if (from === to) throw new TypeError("rename must change the name");
   const definitions = styleKind === "token" ? current.tokens ?? {} : current.textStyles ?? {};
@@ -196,7 +208,7 @@ export function renameSiteStyle(styles: SiteStyles, styleKind: EditingSiteStyleK
 
 /** Build the shared edit request used by the GUI facade and CLI. */
 export function siteStylesEdits(before: SiteStyles, after: SiteStyles, renames: readonly EditingSiteStylesRename[] = []): EditingSiteStylesEdit[] {
-  const old = parseSiteStyles(before), next = parseSiteStyles(after), edits: EditingSiteStylesEdit[] = [];
+  const old = parseSiteStylesWithFrame(before), next = parseSiteStylesWithFrame(after), edits: EditingSiteStylesEdit[] = [];
   for (const rename of renames) {
     const source = rename.styleKind === "token" ? old.tokens : old.textStyles;
     const target = rename.styleKind === "token" ? next.tokens : next.textStyles;
@@ -231,6 +243,10 @@ export function siteStylesEdits(before: SiteStyles, after: SiteStyles, renames: 
           : { type: "set", styleKind, name, value: value as TextStyle });
       }
     }
+  }
+  const oldFrame = old.frame ?? {}, nextFrame = next.frame ?? {};
+  for (const locale of new Set([...Object.keys(oldFrame), ...Object.keys(nextFrame)])) {
+    if (JSON.stringify(oldFrame[locale]) !== JSON.stringify(nextFrame[locale])) edits.push({ type: "frame", locale, value: nextFrame[locale] ?? null });
   }
   return edits;
 }

@@ -352,7 +352,8 @@ const cmsCollectionIdSchema: JsonSchema = Object.freeze({ type: "string", minLen
 const operationIdSchema: JsonSchema = Object.freeze({ type: "string", minLength: 36, maxLength: 36 });
 const siteStylesSchema: JsonSchema = Object.freeze({ type: "object", additionalProperties: false, properties: Object.freeze({
   tokens: Object.freeze({ type: "object", additionalProperties: Object.freeze({ type: "object", additionalProperties: true }) }),
-  textStyles: Object.freeze({ type: "object", additionalProperties: Object.freeze({ type: "object", additionalProperties: true }) })
+  textStyles: Object.freeze({ type: "object", additionalProperties: Object.freeze({ type: "object", additionalProperties: true }) }),
+  frame: Object.freeze({ type: "object", additionalProperties: Object.freeze({ type: "object", additionalProperties: true }) })
 }) });
 const siteStylesSnapshotSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["draft", "published"]), additionalProperties: false,
   properties: Object.freeze({
@@ -365,7 +366,10 @@ const siteStylesEditSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
   Object.freeze({ type: "object", required: Object.freeze(["type", "styleKind", "name"]), additionalProperties: false,
     properties: Object.freeze({ type: Object.freeze({ const: "delete" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), name: Object.freeze({ type: "string" }) }) }),
   Object.freeze({ type: "object", required: Object.freeze(["type", "styleKind", "from", "to"]), additionalProperties: false,
-    properties: Object.freeze({ type: Object.freeze({ const: "rename" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), from: Object.freeze({ type: "string" }), to: Object.freeze({ type: "string" }) }) })
+    properties: Object.freeze({ type: Object.freeze({ const: "rename" }), styleKind: Object.freeze({ type: "string", enum: Object.freeze(["token", "textStyle"]) }), from: Object.freeze({ type: "string" }), to: Object.freeze({ type: "string" }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["type", "locale", "value"]), additionalProperties: false,
+    properties: Object.freeze({ type: Object.freeze({ const: "frame" }), locale: Object.freeze({ type: "string" }),
+      value: Object.freeze({ oneOf: Object.freeze([{ type: "object", additionalProperties: true }, { type: "null" }]) }) }) })
 ]) });
 const siteStylesUsageSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["kind", "id"]), additionalProperties: false,
   properties: Object.freeze({ kind: Object.freeze({ type: "string", enum: Object.freeze(["page", "locale", "component", "presentation", "shared", "template", "siteStyle"]) }),
