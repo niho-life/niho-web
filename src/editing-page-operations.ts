@@ -83,7 +83,8 @@ export const pageCmsBindingsSchema = nullable(obj({
     limit: { type: "integer", minimum: 1, maximum: 25 } }, {
     filter: either(obj({ fieldId: cmsIdentifier, equals: text }), obj({ fieldId: cmsIdentifier, includes: text })), order: obj({ fieldId: cmsIdentifier, direction: valuesOf(["asc", "desc"]) })
   }), 0, 12)
-}, { detail: obj({ collectionId: cmsIdentifier, slugFieldId: cmsIdentifier, fields: cmsFieldBindings }, { basePath: text }) }));
+}, { detail: obj({ collectionId: cmsIdentifier, slugFieldId: cmsIdentifier, fields: cmsFieldBindings }, { basePath: text,
+  seo: obj({}, { title: list(cmsIdentifier, 1, 4), titleSuffix: { type: "string", minLength: 1, maxLength: 60 }, description: list(cmsIdentifier, 1, 4), image: list(cmsIdentifier, 1, 4) }) }) }));
 const breakpoint = either(constant("base"), widthSchema);
 const asset = obj({ provider: id, id: { type: "string", maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" } });
 const styleValue = either(text, number, obj({ token: id }));

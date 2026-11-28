@@ -3758,3 +3758,53 @@ testWithD1("a shared frame resolves its own embed, keeps component IDs apart and
   assert.equal(document.querySelectorAll("main").length, 1, "a page that has its own main is wrapped in a div");
   assert.equal(document.querySelector('[data-nw-node="nwframe-main"]').tagName, "DIV");
 });
+
+testWithD1("CMS detail head, canonical and Article JSON-LD follow each item through detail.seo", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "seo-detail");
+  const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
+  const lookup = (path) => h.send(PUBLIC_ORIGIN, "GET", "/s/seo-detail" + path, undefined, { auth: false, headers: { "Cache-Control": "no-cache" } });
+  const schema = await site.read("cms.schema.read");
+  const items = [];
+  for (const [title, slug, body] of [["Alpha", "alpha", "SEO題名 Alpha"], ["Beta", "beta", ""]]) {
+    items.push((await site.read("cms.items.save", { ...versioned(await createDraft(site, schema.schemaRevision)), values: { title, slug, body } }, { headers: headers() })).item);
+  }
+  await site.read("cms.release.apply", await releasePlan(site, schema.schemaRevision, null, items));
+  await h.cron();
+  const { page } = await pageChange(browser, { action: "create", siteId: site.siteId, locale: "ja", title: "テンプレートの題名", path: "/article-detail" });
+  const detail = await body(await browser("GET", "/" + page.pageId), 200);
+  const bindings = (seo) => ({ schemaVersion: 1, siteId: site.siteId, pageId: page.pageId, locale: "ja", lists: [],
+    detail: { collectionId: "posts", slugFieldId: "slug", basePath: "/articles", ...(seo ? { seo } : {}), fields: [{ nodeId: "article-title", fieldId: "title", target: "text" }] } });
+  const document = { ...detail.document, meta: { description: "テンプレートの説明", structuredData: ["article"] }, body: [frameElement("article-title", "h1", frameText("Title"))] };
+  const bad = await browser("PUT", "/" + page.pageId + "/draft", { expectedVersion: detail.version, document,
+    cmsBindings: bindings({ title: ["title"], image: ["title"] }) });
+  assert.equal(bad.status, 422, "an image binding to a text field is rejected");
+  const saved = await body(await browser("PUT", "/" + page.pageId + "/draft", { expectedVersion: detail.version, document,
+    cmsBindings: bindings({ title: ["body", "title"], titleSuffix: " | 活動", description: ["body"] }) }), 200);
+  await body(await browser("POST", "/" + page.pageId + "/publish", { expectedVersion: saved.version, action: "publish" }), 200);
+  const head = async (path) => {
+    const response = await lookup(path);
+    assert.equal(response.status, 200, path);
+    const dom = new JSDOM(await response.text()).window.document;
+    const graph = JSON.parse(dom.querySelector('script[type="application/ld+json"]').textContent)["@graph"];
+    return { title: dom.title, description: dom.querySelector('meta[name="description"]')?.getAttribute("content"),
+      ogTitle: dom.querySelector('meta[property="og:title"]')?.getAttribute("content"),
+      canonical: dom.querySelector('link[rel="canonical"]')?.getAttribute("href"), article: graph.find((entry) => entry["@type"] === "Article"),
+      page: graph.find((entry) => entry["@type"] === "WebPage") };
+  };
+  const alpha = await head("/articles/alpha"), beta = await head("/articles/beta");
+  assert.equal(alpha.title, "SEO題名 Alpha");
+  assert.equal(alpha.ogTitle, "SEO題名 Alpha");
+  assert.equal(alpha.description, "SEO題名 Alpha");
+  assert.match(alpha.canonical, /\/s\/seo-detail\/articles\/alpha$/u);
+  assert.equal(beta.title, "Beta | 活動", "an empty first field falls back to the title with the suffix");
+  assert.equal(beta.description, "テンプレートの説明", "an empty description keeps the template value");
+  assert.match(beta.canonical, /\/s\/seo-detail\/articles\/beta$/u);
+  assert.equal(alpha.page.name, "SEO題名 Alpha");
+  assert.equal(alpha.article.headline, "SEO題名 Alpha");
+  assert.equal(beta.article.headline, "Beta | 活動");
+  assert.equal(alpha.article.url, alpha.canonical);
+  assert.equal(beta.article.url, beta.canonical);
+  assert.equal("datePublished" in alpha.article, false, "the release record has no per-item dates");
+});

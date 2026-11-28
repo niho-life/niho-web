@@ -1,7 +1,7 @@
 import { cmsArray, cmsId, uniqueCmsKeys, type CmsField, type CmsItemRevision, type CmsProblem, type CmsSchema } from "./cms-v2-schema.js";
 import { parsePageDocument, type PageParseOptions } from "./document.js";
 import { validatePagePath } from "./pages.js";
-import type { BlockContracts, ElementNode, PageDocument, PageNode } from "./types.js";
+import type { AssetReference, BlockContracts, ElementNode, PageDocument, PageNode } from "./types.js";
 import { fail, identifier, keys, localeCode, parseAssetReference, record, string } from "./validation-utils.js";
 import { remapCarouselBinding } from "./carousel.js";
 
@@ -21,11 +21,21 @@ export type CmsPageListBinding = {
   readonly order?: { readonly fieldId: string; readonly direction: "asc" | "desc" };
   readonly fields: readonly CmsPageFieldBinding[];
 };
+/** 詳細ページの head を項目の値にする。配列は field ID を順に見て、最初の空でない値を使う。 */
+export type CmsPageDetailSeo = {
+  readonly title?: readonly string[];
+  /** title の先頭以外の field を使ったときだけ、後ろに付ける。 */
+  readonly titleSuffix?: string;
+  readonly description?: readonly string[];
+  /** image 型の field。 */
+  readonly image?: readonly string[];
+};
 export type CmsPageDetailBinding = {
   readonly collectionId: string;
   readonly slugFieldId: string;
   /** 項目の URL の親。省略時はページ自身のパス。 */
   readonly basePath?: string;
+  readonly seo?: CmsPageDetailSeo;
   readonly fields: readonly CmsPageFieldBinding[];
 };
 export type CmsPageBindingsDocument = Pick<PageDocument, "siteId" | "pageId" | "locale"> & {
@@ -73,6 +83,27 @@ function fieldBindings(input: unknown, path: string): CmsPageFieldBinding[] {
   return bindings;
 }
 
+function parseDetailSeo(input: unknown, path: string): CmsPageDetailSeo {
+  const source = record(input, path);
+  keys(source, ["title", "titleSuffix", "description", "image"], path);
+  const ids = (value: unknown, at: string) => {
+    const list = cmsArray(value, at, 4).map((id, index) => cmsId(id, at + "[" + index + "]"));
+    if (!list.length || new Set(list).size !== list.length) fail(at, "expected 1 to 4 distinct field IDs");
+    return list;
+  };
+  const title = source.title === undefined ? undefined : ids(source.title, path + ".title");
+  const description = source.description === undefined ? undefined : ids(source.description, path + ".description");
+  const image = source.image === undefined ? undefined : ids(source.image, path + ".image");
+  let titleSuffix: string | undefined;
+  if (source.titleSuffix !== undefined) {
+    titleSuffix = string(source.titleSuffix, path + ".titleSuffix", 60);
+    if (!titleSuffix || /[\u0000-\u001f\u007f]/u.test(titleSuffix)) fail(path + ".titleSuffix", "invalid title suffix");
+    if (!title || title.length < 2) fail(path + ".titleSuffix", "title suffix needs a title fallback field");
+  }
+  if (!title && !description && !image) fail(path, "SEO bindings are empty");
+  return { ...(title ? { title } : {}), ...(titleSuffix === undefined ? {} : { titleSuffix }), ...(description ? { description } : {}), ...(image ? { image } : {}) };
+}
+
 export function parseCmsPageBindings(input: unknown, target?: Target): CmsPageBindingsDocument {
   const path = "$bindings", value = record(input, path);
   keys(value, ["schemaVersion", "siteId", "pageId", "locale", "lists", "detail"], path);
@@ -100,12 +131,13 @@ export function parseCmsPageBindings(input: unknown, target?: Target): CmsPageBi
   });
   uniqueCmsKeys(lists.map(({ templateNodeId }) => templateNodeId), path + ".lists");
   const detail = value.detail === undefined ? undefined : record(value.detail, path + ".detail");
-  if (detail) keys(detail, ["collectionId", "slugFieldId", "basePath", "fields"], path + ".detail");
+  if (detail) keys(detail, ["collectionId", "slugFieldId", "basePath", "seo", "fields"], path + ".detail");
   const basePath = detail?.basePath === undefined ? undefined : string(detail.basePath, path + ".detail.basePath", 200);
   if (basePath !== undefined && cmsDetailBaseInvalid(basePath)) fail(path + ".detail.basePath", "invalid CMS detail base path");
   const document: CmsPageBindingsDocument = { schemaVersion: 1, ...scope, lists, ...(detail ? { detail: {
     collectionId: cmsId(detail.collectionId, path + ".detail.collectionId"),
-    slugFieldId: cmsId(detail.slugFieldId, path + ".detail.slugFieldId"), ...(basePath === undefined ? {} : { basePath }), fields: fieldBindings(detail.fields, path + ".detail.fields")
+    slugFieldId: cmsId(detail.slugFieldId, path + ".detail.slugFieldId"), ...(basePath === undefined ? {} : { basePath }),
+    ...(detail.seo === undefined ? {} : { seo: parseDetailSeo(detail.seo, path + ".detail.seo") }), fields: fieldBindings(detail.fields, path + ".detail.fields")
   } } : {}) };
   if (new TextEncoder().encode(JSON.stringify(document)).byteLength > CMS_PAGE_BINDINGS_MAX_BYTES) fail(path, "CMS page bindings are too large");
   return document;
@@ -173,6 +205,16 @@ export function cmsPageBindingProblems(page: PageDocument, bindings: CmsPageBind
       if (source.order && !fieldText.has(field(source.order.fieldId)?.type ?? "")) problem("このフィールドは並べ替えに使えません。", source.order.fieldId);
     } else if (collection.slugField !== source.slugFieldId || field(source.slugFieldId)?.type !== "slug") {
       problem("詳細 URL に使うスラッグのフィールドがありません。", source.slugFieldId);
+    }
+    if ("seo" in source && source.seo) {
+      for (const [name, ids] of [["title", source.seo.title], ["description", source.seo.description], ["image", source.seo.image]] as const) {
+        for (const id of ids ?? []) {
+          const definition = field(id);
+          if (!definition || (name === "image" ? definition.type !== "image" : !fieldText.has(definition.type))) {
+            problem("head に結び付けるフィールドがないか、型が一致しません。", id);
+          }
+        }
+      }
     }
     for (const binding of source.fields) {
       const entry = nodes.get(binding.nodeId), definition = field(binding.fieldId);
@@ -249,6 +291,32 @@ function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: Cms
   }
 }
 
+const oneLine = (value: string): string => value.replace(/[\u0000-\u001f\u007f\s]+/gu, " ").trim();
+function clip(value: string, max: number): string {
+  let result = "";
+  for (const character of value) { if (result.length + character.length > max) break; result += character; }
+  return result;
+}
+/** 項目の値から head の title・description・OG 画像を選ぶ。配列の先頭から、最初の空でない値を使う。 */
+function seoHead(seo: CmsPageDetailSeo, item: CmsItemRevision): { title?: string; description?: string; image?: AssetReference } {
+  const text = (ids: readonly string[] | undefined) => {
+    for (const [index, id] of (ids ?? []).entries()) {
+      const value = item.values[id];
+      const line = typeof value === "string" ? oneLine(value) : "";
+      if (line) return { index, line };
+    }
+    return undefined;
+  };
+  const title = text(seo.title), description = text(seo.description);
+  let image: AssetReference | undefined;
+  for (const id of seo.image ?? []) {
+    const value = item.values[id];
+    if (value !== null && value !== undefined && value !== "") { image = parseAssetReference(value, "$binding.seoImage"); break; }
+  }
+  return { ...(title ? { title: clip(title.index > 0 && seo.titleSuffix ? title.line + seo.titleSuffix : title.line, 300) } : {}),
+    ...(description ? { description: clip(description.line, 500) } : {}), ...(image ? { image } : {}) };
+}
+
 /** Composes renderer input using only the supplied release, or the individually authorized preview revisions. */
 export function resolveCmsPageBindings(page: PageDocument, input: unknown, source: CmsPageBindingSource, options: ProjectionOptions = {}): PageDocument | null {
   const bindings = parseCmsPageBindings(input, page), { schema, items } = source;
@@ -301,5 +369,9 @@ export function resolveCmsPageBindings(page: PageDocument, input: unknown, sourc
       return list ? listItems(list, items, schema).map((entry) => projectNode(node, entry, list.fields, new Map())) : [projectNode(node, item, fields, repeated)];
     });
   }
-  return parsePageDocument({ ...page, body: project(page.body, detailItem, detail?.fields ?? [], undefined) }, options.blocks, options.page);
+  const body = project(page.body, detailItem, detail?.fields ?? [], undefined);
+  const head = detail?.seo && detailItem ? seoHead(detail.seo, detailItem) : {};
+  const meta = head.description !== undefined || head.image ? { ...page.meta, ...(head.description === undefined ? {} : { description: head.description }),
+    ...(head.image ? { ogImage: { asset: head.image, alt: clip(oneLine(head.title ?? page.title), 300) } } : {}) } : page.meta;
+  return parsePageDocument({ ...page, ...(head.title === undefined ? {} : { title: head.title }), ...(meta ? { meta } : {}), body }, options.blocks, options.page);
 }

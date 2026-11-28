@@ -67,7 +67,9 @@ function managedSiteMetadata(metadata: PageMetadata, seo: ManagedSiteSeoSettings
   };
 }
 
-function managedStructuredData(document: PageDocument, publicUrl: string, origin: string, fallbackSiteName: string, seo = emptyManagedPublicPolicy().seo): string {
+type ManagedArticleItem = { readonly headline: string; readonly image?: string };
+function managedStructuredData(document: PageDocument, publicUrl: string, origin: string, fallbackSiteName: string, seo = emptyManagedPublicPolicy().seo,
+  article?: ManagedArticleItem): string {
   const siteName = seo.siteName ?? fallbackSiteName;
   const graph: Record<string, unknown>[] = [
     { "@type": "WebSite", "@id": `${origin}/#website`, url: `${origin}/`, name: siteName, inLanguage: document.locale, ...(seo.description ? { description: seo.description } : {}) },
@@ -80,6 +82,13 @@ function managedStructuredData(document: PageDocument, publicUrl: string, origin
   for (const id of document.meta?.structuredData ?? []) {
     if (id === "organization" && seo.organization) continue;
     const type = types[id];
+    // CMS 詳細（項目が決まっている）の Article は、項目の見出し・画像・詳細の URL を使う。
+    if (id === "article" && article) {
+      graph.push({ "@type": "Article", "@id": `${publicUrl}#${id}`, name: article.headline, headline: article.headline, url: publicUrl,
+        ...(article.image ? { image: article.image } : {}),
+        ...((document.meta?.description ?? seo.description) ? { description: document.meta?.description ?? seo.description } : {}) });
+      continue;
+    }
     if (type) graph.push({ "@type": type, "@id": `${publicUrl}#${id}`, name: siteName, url: origin,
       ...((document.meta?.description ?? seo.description) ? { description: document.meta?.description ?? seo.description } : {}) });
   }
@@ -153,6 +162,8 @@ export async function renderManagedPage(input: {
   readonly includeCandidate?: boolean;
   readonly alternatePages?: readonly ManagedPageAlternate[];
   readonly replacedPages?: readonly Pick<ManagedPageAlternate, "pageId" | "locale">[];
+  /** CMS 詳細で項目が決まっているとき true。Article の構造化データに項目の値を使う。 */
+  readonly cmsDetailItem?: boolean;
 }) {
   const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds, forceNoindex } = input;
   const plan = planManagedPublicRender(prefixedDocument(document, prefix, input.siteStyles), policy, origin, embeds, input.assets);
@@ -169,7 +180,8 @@ export async function renderManagedPage(input: {
     plan.head(policy.seo.ga4MeasurementId)
   ]);
   const head = renderPageHead(metadata) + alternates + managedVerificationTags(policy.seo)
-    + managedStructuredData(rendered, publicUrl, origin, siteName, policy.seo);
+    + managedStructuredData(rendered, publicUrl, origin, siteName, policy.seo,
+      input.cmsDetailItem ? { headline: rendered.title, ...(metadata.openGraph.image ? { image: metadata.openGraph.image.url } : {}) } : undefined);
   const body = renderPageToHtml(rendered, managedPublicBlocks, {
     blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] }), assets: plan.assets,
     imageHints: plan.imageHints,
@@ -326,7 +338,7 @@ export async function prepareManagedPagePublicationBatch(input: {
           const canonicalPath = /[A-Z]/u.test(path) ? path.toLowerCase() : path;
           const rendered = await renderManagedPage({ db: store.db, store, document: framed, policy, origin, prefix: publicPrefix,
             path: canonicalPath, alternatePath: path, publicPath, siteName, embeds, assets: [...assets.values()],
-            siteStyles, alternatePages, replacedPages: input.replacePages });
+            siteStyles, alternatePages, replacedPages: input.replacePages, ...(bindings?.detail ? { cmsDetailItem: true } : {}) });
           const previousPath = target.previousPath === undefined ? path : target.previousPath + path.slice(target.path.length);
           const previousRoute = manifest?.routes.find((route) => route.pageId === target.pageId && route.locale === target.locale
             && route.path === previousPath && route.sourceRevision === target.sourceRevision);
