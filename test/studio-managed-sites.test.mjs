@@ -2958,10 +2958,13 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal(home.status, 200);
   assert.match(home.text, /Published fixture/u);
   assert.doesNotMatch(home.text, /Current fixture/u);
-  const list = await publicHtml("/deferred");
-  assert.equal(list.status, 200);
-  assert.match(list.text, /Published post/u);
-  assert.doesNotMatch(list.text, /Draft post/u);
+  // 詳細テンプレートのページは、公開版の CMS 項目の URL で生成される。
+  const detail = await publicHtml("/deferred/notice");
+  assert.equal(detail.status, 200);
+  assert.match(detail.text, /Published post/u);
+  assert.doesNotMatch(detail.text, /Draft post/u);
+  assert.equal((await publicHtml("/deferred/published-related")).status, 200);
+  assert.equal((await publicHtml("/deferred/draft-related")).status, 404);
   assert.equal((await publicHtml("/en")).status, 404, "a page without a published version stays unpublished");
   assert.equal(counts("managed_page_publications"), 2);
   const homeDraft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "pages.read/home?locale=ja"), 200);
@@ -2969,11 +2972,12 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal((await publishAll()).status, "released");
   assert.equal(counts("managed_page_publications"), 2, "recorded versions are not recorded again");
 
-  // 以後の CMS 公開は、取り込んだ一覧ページも作り直す。
+  // 以後の CMS 公開は、取り込んだ CMS ページも作り直す。
   const current = await site.read("cms.release.current");
   const drafts = await Promise.all(result.mapping.cmsItems.map(async ({ itemId }) =>
     (await site.read("cms.items.read", { collectionId: "posts", itemId })).item));
   await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.releaseId, drafts));
   await h.cron();
-  assert.match((await publicHtml("/deferred")).text, /Draft post/u);
+  assert.match((await publicHtml("/deferred/notice")).text, /Draft post/u);
+  assert.equal((await publicHtml("/deferred/draft-related")).status, 200);
 });
