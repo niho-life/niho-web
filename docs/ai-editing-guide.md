@@ -12,28 +12,52 @@ Node.js 22 以上と Studio への認証が必要です。Access の短期 token
 niho-edit --studio --origin https://studio.example --site site-id discover
 ```
 
-## 読む
+## 標準の手順
 
-まず `pages-catalog` で対象ページを確認します。ページ全体が必要なときは `read` で文書と版を読み、狭い変更では `outline`・`find`・`get` で対象箇所だけ確認します。サイト共通設定や CMS は、それぞれ専用の読取操作を使います。
+サイトをファイルとして取り出し、直して、手元で確かめ、保存してから公開します。
+
+```sh
+niho-edit --studio --origin https://studio.example --site site-id pull ./site
+# ./site のファイルを直す（pages/・cms/・site/）
+niho-edit --studio --origin https://studio.example --site site-id check ./site --html ./preview
+niho-edit --studio --origin https://studio.example --site site-id push ./site
+niho-edit --studio --origin https://studio.example --site site-id publish --changed
+```
+
+- ファイルの形・state・終了コードは [Studio CLI の契約](studio-cli.md#ファイル同期pullcheckpush) にあります。`.niho/` は CLI のものなので編集しません。版や操作 ID を自分で扱う必要はありません。
+- `check` はサーバーに問い合わせず、変わったファイルを検証します。errors を直してから `push` します。`--html` の出力は本文の参考描画で、head・CMS・埋め込みは公開時に描かれます。
+- `push` は変わったファイルだけを下書きに保存し、公開しません。保存後に `publish --changed` で未公開の変更をまとめて公開します。
+- 新しいページは `page-change`、新しい CMS 項目は `cms-create` で作ってから `pull` し直します。ファイルを足しただけでは作られません。
+- CMS 項目の公開は、今は `cms-publish` で項目ごとに行います（`publish --changed` に CMS を含める作業は #527 で、まだです）。
+- ページに紐づく CMS binding はファイルに含めません。変更は `apply --cms-bindings` を使います。
+
+### 競合したとき
+
+`push` や `pull` が競合を報告したら、そのファイルは保存・上書きされません。他の人の変更を確かめ、自分の変更をやり直します。
+
+1. 自分の変更を控えます（差分やコピー）。
+2. 競合したファイルを消して `pull` し直し、サーバーの最新を取ります。
+3. 控えた変更をもう一度入れ、`check`・`push` します。
+
+他のファイルの保存は続くので、競合したファイル以外は保存済みです。
+
+## 一部だけ読む・直す
+
+大きなページの一部だけを見る、または直すときは、次の補助を使います。まず `pages-catalog` で対象ページを確認します。ページ全体が必要なときは `read` で文書と版を読み、狭い変更では `outline`・`find`・`get` で対象箇所だけ確認します。
 
 ```sh
 niho-edit --studio --origin https://studio.example --site site-id pages-catalog
-niho-edit --studio --origin https://studio.example --site site-id read home --locale ja > page.json
 niho-edit --studio --origin https://studio.example --site site-id outline home --locale ja --depth 2
 ```
 
-## 直して保存する
-
-文章や属性など一部の変更は、`apply` に必要な操作だけを渡します。大きく編集した文書は `save` で保存できます。どちらも直前に読んだ版を指定し、サーバー側の版照合を通します。変更内容を見直し、対象外の下書きや共通設定を含めないでください。
+文章や属性など一部の変更は、`apply` に必要な操作だけを渡します。直前に読んだ版を指定し、サーバー側の版照合を通します。
 
 ```sh
 niho-edit --studio --origin https://studio.example --site site-id apply home --locale ja \
   --ops edits.json --expected-version '<read-version>' --operation-id '<uuid-v4>'
 ```
 
-保存後は応答の版と差分を確かめ、Studio のプレビューで表示を確認します。サイトの SEO 設定、公開許可 origin、リダイレクト、共通スタイルは専用の `site-seo-*`、`site-public-*`、`site-redirects-*`、`styles` 操作を使います。
-
-版が競合したら、最新の文書を読み直して他の人の変更を確認し、自分の意図した変更だけを適用し直します。古い文書をそのまま保存して上書きしないでください。
+保存後は応答の版と差分を確かめ、Studio のプレビューで表示を確認します。ファイルにない操作（`site-seo-*`、`site-public-*`、`site-redirects-*`、`styles` の rename など）も、専用の操作で行えます。版が競合したら最新を読み直し、意図した変更だけを適用し直します。古い文書をそのまま保存して上書きしないでください。
 
 ## 公開する
 
@@ -68,4 +92,4 @@ niho-edit --studio --origin https://studio.example --site site-id restore home '
 
 鎌倉の切り替えが終わるまでは旧ホスト経路も残っています。その経路は `--studio` を付けない既存の `apply`・`release-plan`・`release` を使います。これは移行期間だけの手順で、Studio 内サイトの標準手順とは分けて扱います。切り替え後は外部ホスト向けの経路を #492 で撤去します。
 
-AI がサイトをファイルとして取得・編集・同期する `pull` → `check` → `push` は、利用可能になった後にこの手順へ追加します。詳細な引数と JSON 形式は [Studio CLI の契約](studio-cli.md) を参照してください。
+詳細な引数と JSON 形式は [Studio CLI の契約](studio-cli.md) を参照してください。

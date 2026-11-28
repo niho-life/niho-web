@@ -47,6 +47,42 @@ niho-edit --studio --origin https://studio.example --site demo-site page-embed-r
 
 `embed.json` の `src` に対象ページ用に NIHO で発行した埋め込み URL を指定します。出力の `result.refId` をページの `ManagedEmbed` ブロックに設定して、`apply` または `save` で保存します。埋め込み先の origin はサイト設定で許可してください。HTTP 操作は POST `/api/edit/v2/sites/{siteId}/operations/pages.embed-register/{pageId}` で、入力は `{ locale, src }` です。GUI と同じ編集権限を使い、機械認証には `pages.edit` の grant が必要です。
 
+## ファイル同期（pull・check・push）
+
+Studio を正本のまま、サイトをディレクトリのファイルとして直すための3コマンドです。3つとも `--studio` が必須で、無ければ `invalid_arguments` です。`[dir]` の既定は `.` です。
+
+```sh
+niho-edit --studio --origin https://studio.example --site site-id pull ./site
+niho-edit --studio --origin https://studio.example --site site-id check ./site --html ./preview
+niho-edit --studio --origin https://studio.example --site site-id push ./site
+niho-edit --studio --origin https://studio.example --site site-id publish --changed
+```
+
+ディレクトリの形です。JSON はキーを再帰的に辞書順に並べ、2スペース字下げ、末尾改行で書きます（配列の順は保ちます）。
+
+| パス | 中身 |
+| --- | --- |
+| `pages/<locale>/<pageId>.json` | `read` の `document` そのもの |
+| `cms/<collectionId>/<itemId>.json` | CMS 項目の `values`（訳は含めません） |
+| `site/seo.json` | `site-seo-read` の `settings` |
+| `site/redirects.json` | `site-redirects-read` の `redirects` 配列 |
+| `site/public.json` | `{ domain: { hostname, noindex }, origins: { frameOrigins, resourceOrigins } }` |
+| `site/styles.json` | `styles read` の `draft.styles` |
+| `.niho/state.json` | CLI だけが書く。各ファイルの種別・識別子・版・内容の hash・CMS 保存の操作 ID |
+| `.niho/context.json` | `check` が使う読取専用の文脈（ブレークポイント設定、公開パス一覧） |
+
+版と操作 ID は `.niho/state.json` にだけあり、編集するファイルには含めません。ページに紐づく CMS binding（`cmsBindings`）はファイルに含めません。変更は `apply --cms-bindings` で行います。素材（画像）は `pull` せず、参照の ID だけを置きます。アップロードは `assets-upload` です。
+
+機械認証の grant は、`pull` に `pages.read`・`site.settings.read`・`cms.read`、`push` に `pages.edit`・`site.settings.write`・`cms.edit` が要ります。どれかが無いと `pull` は 403 で止まります。
+
+- **pull**: dir が空、または同じ origin・site の state がある場合だけ進みます（`sync_dir_not_empty` / `sync_dir_other_site`）。ローカルが未変更ならサーバーの内容で更新し、ローカルだけが変更済みなら残します（`kept`）。両方が変わったファイルは触らず `conflicts` に報告し、終了コード 1 です。ローカルの変更を捨てるときは、そのファイルを消してから `pull` し直します。サーバーから消えた項目は、ローカルが未変更なら消し、変更済みなら報告だけです。
+- **check**: サーバーに問い合わせません。既定は変わったファイル、`--all` で全ファイルです。ページの形式・識別子・lint、SEO・リダイレクト・スタイルの形式、1ページ 200KB 超の警告を出します。`--html <out>` は本文を `<out>/<locale>/<pageId>.html` に参考描画し、公開 HTML の SEO 検査をかけます。部品は空の枠で描き、head・CMS・埋め込みは公開時に描くため、HTML は本文の参考です。描けないページは `html_render_unavailable` の警告です。`unused-token` などサイト全体の lint は `--all` のときだけ出ます。errors があれば終了コード 1 です。
+- **push**: 変わったファイルだけを、ファイルごとに独立して版照合付きで下書きに保存します。1件が競合・失敗しても残りは続けます。ローカル検証（`check` と同じ）に失敗したファイルは送らず `invalid` です。結果は `saved`・`conflicts`・`invalid`・`skipped` で、競合か invalid があれば終了コード 1 です。公開はしません。
+  - 新しいファイルと、ローカルで消したファイルは `skipped` です。ページは `page-change`、CMS 項目は `cms-create` で作ってから `pull` します。削除は GUI か `page-change` で行います。
+  - CMS の保存は操作 ID を state に残してから送り、通信失敗後の再 `push` では同じ ID を使います。
+  - SEO 設定と `origins` は版を共有します。`seo` を先に保存し、返った版を `origins` に引き継いでから `public` を保存します。`public` は変えた側（`domain` / `origins`）だけを送り、`partial_save` はそのまま報告します。
+  - スタイルは、サーバーの現在の draft との差分を `styles edit` の edits にして送ります。使用中の値の削除は `referenced` として使用箇所を返します。名前の変更は推測しないので、`styles edit` の rename を使います。
+
 ## 鎌倉のページ編集と公開
 
 Studio Worker は Access で検証済みの service identity と、対象 Project・Site の `studio_cli_grants` を照合する。現在のオーナーが委任した有効な `pages.read`、`pages.edit`、`pages.publish` がそれぞれ読取、保存、公開に必要になる。公開は計画を作り、確認した計画と一意の operation ID を渡して適用する。共通 API は `/api/edit/v1/sites/:siteId` 配下で、利用できる操作を `discover` が返す。CMS の読み取り・編集・公開も、応答に含まれる `cms.*` 操作を対応する grant で呼び出す。

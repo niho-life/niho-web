@@ -15,7 +15,7 @@ import { readManagedPublishedSiteStyles, readManagedSiteStyles } from "./managed
 import { kamakuraImageUrl } from "./kamakura-public-images.js";
 import { loadPublishedSiteManifest, preparePublishedSiteBatch, type PublishedRouteInput } from "./managed-publication.js";
 import type { ManagedSiteRedirect } from "../src/managed-site-redirects.js";
-import { inspectManagedHtmlSeo } from "./managed-html-seo-checks.js";
+import { inspectManagedHtmlSeo } from "../src/managed-html-seo-checks.js";
 import type { EditorReleaseWarning } from "../src/editor-types.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
