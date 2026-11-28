@@ -2749,7 +2749,9 @@ testWithD1("Kamakura import finalize rejects an item path that collides with a t
   const item = (itemId, path, translations) => ({ collectionId: "posts", itemId,
     published: { ...values(itemId, itemId), public_path: path }, draft: { ...values(itemId, itemId), public_path: path },
     ...(translations ? { translations } : {}) });
-  const reviewed = { title: { value: "Translated", reviewed: true }, body: { value: "<p>Translated</p>", reviewed: true } };
+  // 翻訳先の release に入るのは全項目が確認済みの翻訳だけ。公開パスの項目は翻訳しない。
+  const reviewed = { title: { value: "Translated", reviewed: true }, slug: { value: "translated", reviewed: true },
+    body: { value: "Translated", reviewed: true } };
   const home = { document: { schemaVersion: 1, siteId, pageId: "home-source", locale: "ja", revision: 1, title: "Home", tokens: {}, body: [] } };
   const source = { formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
     pages: [{ sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public", published: home, draft: home }],
@@ -3010,7 +3012,7 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   const current = await site.read("cms.release.current");
   const drafts = await Promise.all(result.mapping.cmsItems.map(async ({ itemId }) =>
     (await site.read("cms.items.read", { collectionId: "posts", itemId })).item));
-  await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.releaseId, drafts));
+  await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.snapshot.releaseId, drafts));
   await h.cron();
   assert.match((await publicHtml("/deferred/notice")).text, /Draft post/u);
   assert.equal((await publicHtml("/deferred/draft-related")).status, 200);
