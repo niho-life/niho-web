@@ -10,18 +10,19 @@ const studio = fileURLToPath(new URL(".", import.meta.url));
 const root = resolve(studio, "..");
 const requiredPublicMigrations = new Set([
   "0016_static_page_publication.sql",
-  "0017_managed_page_sources.sql",
-  "0018_managed_public_embeds.sql",
-  "0019_managed_public_domains.sql",
-  "0020_managed_site_redirects.sql",
-  "0021_managed_published_paths.sql",
+  "0017_managed_public_embeds.sql",
+  "0018_managed_public_domains.sql",
+  "0019_managed_site_redirects.sql",
+  "0020_managed_published_paths.sql",
+  "0021_managed_page_sources.sql",
   "0023_managed_site_primary_host.sql"
 ]);
 const allowedStudioOnlyMigrations = new Set([
   "0022_managed_site_redirect_versions.sql",
   "0024_managed_one_step_publish.sql",
   "0025_managed_site_imports.sql",
-  "0026_managed_site_styles.sql"
+  "0026_managed_site_styles.sql",
+  "0027_managed_site_publication_history_details.sql"
 ]);
 
 export function classifyPublicReleaseMigrations(pending) {
