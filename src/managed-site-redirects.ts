@@ -1,4 +1,5 @@
 import { validatePagePath } from "./pages.js";
+import { validCmsItemPath } from "./cms-v2-routes.js";
 
 export type ManagedSiteRedirect = {
   readonly locale: string;
@@ -12,10 +13,13 @@ const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const REDIRECT_KEYS = ["fromPath", "locale", "toPath"] as const;
 
 /** Parse an entire versioned redirect snapshot, rejecting ambiguous paths and loops. */
-export function parseManagedSiteRedirects(value: unknown, maximum = MAX_MANAGED_SITE_REDIRECTS): ManagedSiteRedirect[] | null {
+export function parseManagedSiteRedirects(value: unknown, maximum = MAX_MANAGED_SITE_REDIRECTS,
+  options: { readonly includeCmsPaths?: boolean } = {}): ManagedSiteRedirect[] | null {
   if (!Array.isArray(value) || value.length > maximum) return null;
   const redirects: ManagedSiteRedirect[] = [];
   const bySource = new Map<string, string>();
+  const pathAllowed = (path: unknown): path is string => typeof path === "string"
+    && (options.includeCmsPaths ? validCmsItemPath(path) !== null : validatePagePath(path) === null);
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const record = item as Record<string, unknown>;
@@ -23,10 +27,9 @@ export function parseManagedSiteRedirects(value: unknown, maximum = MAX_MANAGED_
     if (keys.length !== REDIRECT_KEYS.length || keys.some((key, index) => key !== REDIRECT_KEYS[index])) return null;
     const { locale, fromPath, toPath } = record;
     if (typeof locale !== "string" || locale.length > 40 || !LOCALE.test(locale)
-      || validatePagePath(fromPath) !== null || validatePagePath(toPath) !== null || fromPath === toPath
-      || bySource.has(fromPath as string)) return null;
-    bySource.set(fromPath as string, toPath as string);
-    redirects.push({ locale, fromPath: fromPath as string, toPath: toPath as string });
+      || !pathAllowed(fromPath) || !pathAllowed(toPath) || fromPath === toPath || bySource.has(fromPath)) return null;
+    bySource.set(fromPath, toPath);
+    redirects.push({ locale, fromPath, toPath });
   }
   const complete = new Set<string>();
   for (const { fromPath } of redirects) {

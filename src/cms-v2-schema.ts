@@ -1,5 +1,5 @@
 import {
-  parseCollectionSchemaResult, parseCollectionValues, validateCollectionValues,
+  collectionPublicPath, parseCollectionSchemaResult, parseCollectionValues, validateCollectionValues,
   type CollectionDefinition, type CollectionField, type CollectionValue, type CollectionValues
 } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
@@ -59,6 +59,7 @@ function mapCollectionFields(definition: CollectionDefinition, names: ReadonlyMa
   return {
     ...definition, titleField: mapped(definition.titleField)!, slugField: mapped(definition.slugField),
     imageField: mapped(definition.imageField), subtitleField: mapped(definition.subtitleField),
+    ...(definition.pathField ? { pathField: mapped(definition.pathField)! } : {}),
     fields: definition.fields.map((field) => ({ ...field, key: mapped(field.key)! }))
   };
 }
@@ -94,9 +95,12 @@ export function parseCmsSchema(input: unknown): CmsSchema {
       const id = collection[key];
       refs[key] = id === null ? null : namesById.get(cmsId(id, `${at}.${key}`)) ?? fail(`${at}.${key}`, "unknown field ID");
     }
+    if (collection.pathField != null) {
+      refs.pathField = namesById.get(cmsId(collection.pathField, `${at}.pathField`)) ?? fail(`${at}.pathField`, "unknown field ID");
+    }
     if (collection.pathPrefix !== null) {
       const prefix = collection.pathPrefix;
-      if (typeof prefix !== "string" || !prefix.endsWith("/") || refs.slugField === null) fail(`${at}.pathPrefix`, "path needs a trailing slash and slug field");
+      if (typeof prefix !== "string" || !prefix.endsWith("/") || refs.slugField === null && refs.pathField === undefined) fail(`${at}.pathPrefix`, "path needs a trailing slash and slug or item path field");
       cmsPath(prefix === "/" ? prefix : prefix.slice(0, -1), `${at}.pathPrefix`);
     }
     return { ...collection, ...refs, fields };
@@ -163,7 +167,7 @@ export type CmsMigration = {
   readonly changes: readonly CmsMigrationChange[];
   readonly problems: readonly CmsProblem[];
 };
-export type CmsRouteBoundMigration = CmsMigration & { readonly routeTableVersions: readonly CmsRouteTableVersion[] };
+export type CmsRouteBoundMigration = CmsMigration & { readonly routeTableVersions: readonly CmsRouteTableVersion[]; readonly sourceLocale: string };
 const textualTypes = new Set(["text", "longText", "slug", "url"]);
 function convertValue(value: CollectionValue, before: CmsField, after: CmsField): CollectionValue | undefined {
   if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) return undefined;
@@ -253,6 +257,7 @@ export function planCmsMigrationWithRouteTables(input: {
   readonly replacements?: readonly CmsMigrationReplacement[];
   readonly routeTables: readonly CmsRouteTable[];
   readonly expectedRouteTableVersions: readonly CmsRouteTableVersion[];
+  readonly sourceLocale?: string;
   readonly impact?: CmsMigrationImpact;
 }): CmsRouteBoundMigration | null {
   const before = parseCmsSchema(input.before), next = parseCmsSchema(input.next);
@@ -261,24 +266,45 @@ export function planCmsMigrationWithRouteTables(input: {
   const expected = [...input.expectedRouteTableVersions].sort((a, b) => a.locale < b.locale ? -1 : a.locale > b.locale ? 1 : 0);
   if (!tables.length || new Set(versions.map(({ locale }) => locale)).size !== versions.length
     || JSON.stringify(versions) !== JSON.stringify(expected)) return null;
+  const sourceLocale = input.sourceLocale ?? tables[0]!.locale;
+  if (!versions.some(({ locale }) => locale === sourceLocale)) return null;
   const itemLocales = new Set(input.items.map(({ item }) => parseCmsItemRevision(item, before).locale));
   if ([...itemLocales].some((locale) => !versions.some((version) => version.locale === locale))) return null;
 
   const routedImpact: CmsMigrationImpact = (oldSchema, nextSchema, changes, items) => {
-    const routesFor = (locale: string): CmsRouteCandidate[] => items.filter((item) => item.locale === locale && !item.tombstoned).flatMap((item) => {
-      const collection = nextSchema.collections.find(({ id }) => id === item.collectionId);
-      if (!collection?.pathPrefix || !collection.slugField) return [];
-      const slug = item.values[collection.slugField];
-      if (typeof slug !== "string" || !slug) return [];
-      return [{ collectionId: item.collectionId, itemId: item.itemId, path: `${collection.pathPrefix}${slug}` }];
-    });
-    return [
-      ...tables.flatMap((table) => cmsMigrationRouteProblems({ table, schema: nextSchema, routes: routesFor(table.locale) })),
-      ...(input.impact?.(oldSchema, nextSchema, changes, items) ?? []),
-    ];
+    const problems: CmsProblem[] = [];
+    for (const table of tables) {
+      const localized = table.locale !== sourceLocale;
+      const routeRoot = localized ? `/${table.locale}/cms` : "/cms";
+      const listPaths = new Set([routeRoot, ...nextSchema.collections.flatMap(({ id, pathPrefix }) => {
+        if (!pathPrefix) return [];
+        if (!localized) return [pathPrefix.slice(0, -1)];
+        let relative = pathPrefix.replace(/^\/cms(?=\/)/u, "");
+        if (relative === "/") relative = `/${id.toLowerCase()}/`;
+        if (!relative.startsWith("/")) relative = `/${relative}`;
+        return [`/${table.locale}/cms${relative}`.slice(0, -1)];
+      })]);
+      const routes: CmsRouteCandidate[] = [];
+      for (const item of items) {
+        if (item.locale !== table.locale || item.tombstoned) continue;
+        const collection = cmsCollection(nextSchema, item.collectionId);
+        const localizedPathPrefix = item.locale === sourceLocale ? "" : `/${item.locale}`;
+        const path = collectionPublicPath(collection, item.values, localizedPathPrefix);
+        if (path !== null) {
+          routes.push({ collectionId: item.collectionId, itemId: item.itemId, path });
+          if (collection.pathField && listPaths.has(path)) problems.push({ code: "route", collectionId: item.collectionId,
+            itemId: item.itemId, fieldId: collection.pathField, locale: item.locale, path, message: "項目の公開パスが CMS の一覧パスと重複しています。" });
+        } else if (collection.pathField && item.values[collection.pathField]) {
+          problems.push({ code: "route", collectionId: item.collectionId, itemId: item.itemId, fieldId: collection.pathField,
+            locale: item.locale, message: "項目の公開パスを確認してください。" });
+        }
+      }
+      problems.push(...cmsMigrationRouteProblems({ table, schema: nextSchema, routes }));
+    }
+    return [...problems, ...(input.impact?.(oldSchema, nextSchema, changes, items) ?? [])];
   };
   const migration = planCmsMigration(before, next, input.items, input.replacements ?? [], routedImpact);
-  return { ...migration, routeTableVersions: versions };
+  return { ...migration, routeTableVersions: versions, sourceLocale };
 }
 
 /** The supplied items form a complete editable or published view. References resolve inside their locale. */

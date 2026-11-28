@@ -14,9 +14,8 @@ import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-
 import { cmsPageBindingProblems, parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { readManagedSiteStyles } from "./managed-site-styles.js";
-import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
+import { collectionPublicPath, parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
-import { validatePagePath } from "../src/pages.js";
 import { OPERATION_KEY_HEADER, UUID_V4 } from "../src/studio-cli-auth.js";
 import { MANAGED_CMS_EXTRA_OPERATIONS } from "../src/managed-cms-operations.js";
 import {
@@ -170,15 +169,13 @@ function workspaceItem(site: Site, item: CmsItemRevision, meta: ItemMeta, contex
   const schedule = context.jobs.find((job) => job.kind === "schedule" && job.payload.pins.includes(cmsItemKey(item)));
   const pending = context.jobs.find((job) => job.kind === "release"
     && (job.payload.pins.includes(cmsItemKey(item)) || selected !== undefined));
-  const slug = collection.slugField === null ? null : item.values[collection.slugField];
-  const candidatePath = slug && collection.pathPrefix ? `${collection.pathPrefix}${String(slug)}` : null;
   const subtitle = collection.subtitleField === null ? null : item.values[collection.subtitleField];
   return cmsWorkspaceItem(site.state.schema, item, {
     draftRevision: item.revision, publishedRevision: selected?.revision ?? null, publishedAt: selected ? site.state.current?.at ?? null : null,
     deliveryState: pending ? { state: "pending", releaseId: pending.payload.releaseId } : { state: "idle" },
     schedule: schedule ? { id: schedule.id, at: schedule.at, state: "scheduled" } : null, tombstone: null
   }, { subtitle: typeof subtitle === "string" && subtitle ? subtitle : null, imageUrl: null,
-    path: candidatePath && validatePagePath(candidatePath) === null ? candidatePath : null,
+    path: collectionPublicPath(collection, item.values),
     updatedAt: meta.updatedAt, updatedBy: null, order: null })!;
 }
 
@@ -274,7 +271,7 @@ async function schemaOperation(store: CmsStore, site: Site, capability: CmsCapab
     const { drafts, routeTables, impact } = await migrationContext(store, site, capability);
     const proposed = { ...input.nextSchema, schemaRevision: opaque("schema") };
     const migration = planCmsMigrationWithRouteTables({ before: site.state.schema, next: proposed, items: drafts,
-      replacements: input.replacements, routeTables, expectedRouteTableVersions: input.routeTableVersions, impact });
+      replacements: input.replacements, routeTables, expectedRouteTableVersions: input.routeTableVersions, sourceLocale: site.state.locale, impact });
     if (!migration) return conflict();
     if (migration.problems.length) return json({ status: "invalid", problems: migration.problems }, 422);
     const plan = await storePlan(store, site, capability, "cms.schema.apply", opaque("op"), { migration, replacements: input.replacements });
@@ -287,7 +284,7 @@ async function schemaOperation(store: CmsStore, site: Site, capability: CmsCapab
   if (!plan) return notFound();
   const { drafts, routeTables, impact, bindingsGeneration } = await migrationContext(store, site, capability);
   const check = checkCmsSchemaApply(siteScope(site), input, { ...plan, operation, candidate: plan.candidate.migration }, dateNow(),
-    site.state.schema, drafts, routeTables, plan.candidate.replacements, impact);
+    site.state.schema, drafts, routeTables, plan.candidate.replacements, impact, site.state.locale);
   if (check.status !== "allowed") return json(check, 409);
   const items: Site["state"]["items"] = {}, revisions = await Promise.all(check.candidate.items.map(async (draft): Promise<CmsItemRevision> => {
     const { collectionId, itemId, values, locale } = draft;
@@ -488,8 +485,8 @@ async function localizationOperation(store: CmsStore, site: Site, operation: Ope
 async function localizationReleaseContext(store: CmsStore, site: Site, targetLocale: string,
   revisions: readonly CmsItemRevision[] = []): Promise<CmsReleaseContext> {
   const schema = cmsLocalizedSchema(site.state.schema, targetLocale);
-  const [routeTable, fixedRoutes, publicAssets] = await Promise.all([
-    store.routeTable(site, "cms.publish", targetLocale), store.fixedRoutes(site, "cms.publish", targetLocale),
+  const [routeTable, publicAssets] = await Promise.all([
+    store.routeTable(site, "cms.publish", targetLocale),
     store.publicAssets(schema, revisions)
   ]);
   const revisionByKey = new Map(revisions.map((item) => [cmsItemKey(item), item]));
@@ -497,7 +494,7 @@ async function localizationReleaseContext(store: CmsStore, site: Site, targetLoc
     schema, locale: targetLocale, sourceLocale: site.state.locale,
     currentReleaseId: site.state.localizedReleases?.[targetLocale]?.id ?? null, routeTable, publicAssets,
     readRevision: (pin) => revisionByKey.get(cmsItemKey(pin)), isRemoved: () => false,
-    impact: (snapshot) => releaseImpacts(snapshot, fixedRoutes),
+    impact: (snapshot) => releaseImpacts(snapshot, routeTable),
     publicRichText: ({ html }) => escapeHtml(html)
   };
 }

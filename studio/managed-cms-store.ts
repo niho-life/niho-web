@@ -210,14 +210,7 @@ export class CmsStore {
     });
   }
 
-  async fixedRoutes(site: Site, capability: CmsCapability, locale = site.state.locale) {
-    const results = await this.db.prepare(`SELECT path FROM managed_pages WHERE site_id = ?2 AND locale = ?6
-      AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, capability), locale).all<{ path: string }>();
-    if (!results.success || !results.results) throw new Error("CMS route lookup failed");
-    return new Set(results.results.map(({ path }) => path));
-  }
-
-  /** Compose the current CMS route snapshot with live, published fixed pages. */
+  /** Compose the locale snapshot with fixed paths and redirect sources, which are site-wide. */
   async routeTable(site: Site, capability: CmsCapability, locale = site.state.locale): Promise<CmsRouteTable> {
     let stored: CmsRouteTable | null = null;
     const localized = site.state.localizedReleases?.[locale];
@@ -238,18 +231,41 @@ export class CmsStore {
     const base = stored ?? { siteId: site.siteId, locale,
       revision: snapshot?.routeTableRevision ?? (snapshot ? `routes_${await digest(legacyReservations)}` : "routes_initial"),
       reservations: legacyReservations };
-    const pages = await this.db.prepare(`SELECT page_id, path, visibility, published_revision FROM managed_pages WHERE site_id = ?2 AND locale = ?6
-      AND EXISTS (SELECT 1 ${AUTH}) ORDER BY path, page_id`)
-      .bind(...scopeValues(site, capability), locale).all<{ page_id: string; path: string; visibility: string; published_revision: number | null }>();
-    if (!pages.success || !pages.results) throw new Error("CMS route lookup failed");
-    const fixed = await Promise.all(pages.results.map(async ({ page_id, path, visibility, published_revision }) => ({
+    const paths = await this.db.prepare(`WITH host_paths AS (
+      SELECT page_id, path, visibility, published_revision FROM managed_pages WHERE site_id = ?2
+      UNION ALL
+      SELECT NULL, redirect.from_path, NULL, NULL FROM managed_site_redirects AS redirect WHERE redirect.site_id = ?2
+        AND NOT EXISTS (SELECT 1 FROM managed_pages AS page WHERE page.site_id = ?2 AND page.path = redirect.from_path)
+    ) SELECT * FROM host_paths WHERE EXISTS (SELECT 1 ${AUTH}) ORDER BY path, page_id`)
+      .bind(...scopeValues(site, capability)).all<{ page_id: string | null; path: string; visibility: string | null; published_revision: number | null }>();
+    if (!paths.success || !paths.results) throw new Error("CMS route lookup failed");
+    const fixed = await Promise.all(paths.results.map(async ({ page_id, path, visibility, published_revision }) => ({
       kind: visibility === "public" && published_revision !== null ? "fixed-page" as const : "reserved" as const, path,
       reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale, page_id, path })).slice(0, 32)}`
     })));
+    const otherReleases = [
+      ...(site.state.current && site.state.locale !== locale ? [{ locale: site.state.locale, releaseId: site.state.current.id }] : []),
+      ...Object.entries(site.state.localizedReleases ?? {}).flatMap(([releasedLocale, release]) =>
+        releasedLocale !== locale ? [{ locale: releasedLocale, releaseId: release.id }] : [])
+    ].sort((left, right) => left.locale.localeCompare(right.locale));
+    // All locales share one URL namespace; reserve the published CMS paths from other locales.
+    const foreignPaths = new Map<string, string>();
+    const foreignSnapshots = await Promise.all(otherReleases.map(async (release) => ({ ...release,
+      snapshot: await this.snapshot(site.siteId, release.releaseId) })));
+    for (const { locale: releasedLocale, snapshot: release } of foreignSnapshots) {
+      for (const path of [
+        ...release.items.flatMap((item) => item.path ? [item.path] : []),
+        ...release.redirects.map(({ from }) => from)
+      ]) foreignPaths.set(path, releasedLocale);
+    }
+    const foreignCms = await Promise.all([...foreignPaths].map(async ([path, releasedLocale]) => ({
+      kind: "reserved" as const, path,
+      reservationId: `cms_locale_route_${(await digest({ locale: releasedLocale, path })).slice(0, 32)}`
+    })));
     const withoutOldFixed = base.reservations.filter((reservation) => !((reservation.kind === "fixed-page" || reservation.kind === "reserved")
-      && reservation.reservationId.startsWith("managed_page_")));
+      && (reservation.reservationId.startsWith("managed_page_") || reservation.reservationId.startsWith("cms_locale_route_"))));
     const next = parseCmsRouteTable({ siteId: site.siteId, locale, revision: base.revision,
-      reservations: [...withoutOldFixed, ...fixed] }, site.siteId, locale);
+      reservations: [...withoutOldFixed, ...fixed, ...foreignCms] }, site.siteId, locale);
     const unchanged = JSON.stringify(next.reservations) === JSON.stringify(base.reservations);
     return unchanged ? next : parseCmsRouteTable({ ...next, revision: `routes_${await digest(next.reservations)}` }, site.siteId, locale);
   }

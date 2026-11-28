@@ -29,7 +29,7 @@ const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
   stdin: {
-    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { renderManagedPage } from "./studio/managed-page-publication.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts"; export { inspectManagedHtmlSeo } from "./studio/managed-html-seo-checks.ts";',
+    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { releaseImpacts } from "./studio/managed-cms-release.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { renderManagedPage } from "./studio/managed-page-publication.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts"; export { inspectManagedHtmlSeo } from "./studio/managed-html-seo-checks.ts";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url))
   },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false,
@@ -37,7 +37,7 @@ const bundle = await build({
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
 const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore, initializePublicNihoEmbeds, managedPublicBlocks, planManagedPublicRender, emptyManagedPublicPolicy,
-  renderManagedPage, inspectManagedHtmlSeo } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+  renderManagedPage, inspectManagedHtmlSeo, releaseImpacts } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
@@ -2140,6 +2140,91 @@ testWithD1("Studio CMS release snapshots include live unpublished page reservati
   const released = await site.read("cms.release.current");
   assert.equal(released.routeTableRevision, released.snapshot.routeTable.revision);
   assert.ok(released.snapshot.routeTable.reservations.some(({ kind, path }) => kind === "reserved" && path === "/about"));
+});
+
+testWithD1("Studio publishes explicit CMS item URLs and replaces their old redirects atomically", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "explicit-cms-paths");
+  const initial = await site.read("cms.schema.read"), { routeTableRevision } = await site.read("cms.release.current");
+  const nextSchema = structuredClone(initial);
+  nextSchema.collections[0].pathField = "public_path";
+  nextSchema.collections[0].fields.push({ fieldId: "public_path", key: "public_path", label: "Public path", type: "text", placement: "side" });
+  const { plan: schemaPlan } = await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema, replacements: [] });
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: schemaPlan.operationId, confirmationToken: schemaPlan.confirmationToken });
+  const save = async (draft, title, slug, publicPath) => (await site.read("cms.items.save",
+    { ...versioned(draft), values: { ...values(title, slug), public_path: publicPath } }, { headers: headers() })).item;
+  let first = await save(await createDraft(site, schemaRevision), "First", "first", "/archive/First");
+  const second = await save(await createDraft(site, schemaRevision), "Second", "second", "/profiles/second");
+  const literal = (path) => publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}/s/explicit-cms-paths${path}`, {
+    headers: { "Cache-Control": "no-cache" }
+  }), h.env);
+  const state = () => h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
+  const release = async (items, previous) => {
+    await site.read("cms.release.apply", await releasePlan(site, schemaRevision, previous, items));
+    await h.cron();
+    return (await site.read("cms.release.current")).snapshot.releaseId;
+  };
+
+  const reserve = h.sqlite.prepare("INSERT INTO managed_site_redirects (site_id, locale, from_path, to_path) VALUES (?, 'en', '/profiles/second', '/')");
+  reserve.run(site.siteId);
+  const rejected = await body(await site.post("cms.release.plan", {
+    schemaRevision, locale: "ja", routeTableRevision: (await site.read("cms.release.current")).routeTableRevision,
+    expectedReleaseId: null, items: [pin(first), pin(second)], redirects: []
+  }), 422);
+  assert.ok(rejected.problems.some(({ path, code }) => path === "/profiles/second" && code === "route"));
+  assert.equal(state(), null);
+  h.sqlite.prepare("DELETE FROM managed_site_redirects WHERE site_id = ?").run(site.siteId);
+
+  const initialRelease = await release([first, second], null);
+  const firstManifest = state();
+  assert.match(await (await literal("/archive/First")).text(), /<h1>First<\/h1>/u);
+  assert.match(await (await literal("/profiles/second")).text(), /<h1>Second<\/h1>/u);
+  assert.equal((await literal("/cms/posts/first")).status, 404);
+
+  first = await save(first, "First moved", "first", "/profiles/first");
+  const moved = await release([first, second], initialRelease);
+  assert.notEqual(state(), firstManifest);
+  const redirect = await literal("/archive/First");
+  assert.equal(redirect.status, 301);
+  assert.equal(redirect.headers.get("Location"), `${PUBLIC_ORIGIN}/s/explicit-cms-paths/profiles/first`);
+  assert.match(await (await literal("/profiles/first")).text(), /<h1>First moved<\/h1>/u);
+
+  await release([second], moved);
+  assert.equal((await literal("/archive/First")).status, 404);
+  assert.equal((await literal("/profiles/first")).status, 404);
+  assert.equal((await literal("/profiles/second")).status, 200);
+});
+
+testWithD1("Studio CMS rejects paths reserved by another published locale", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-cross-locale-routes");
+  const schema = await site.read("cms.schema.read"), current = await site.read("cms.release.current");
+  const nextSchema = structuredClone(schema);
+  nextSchema.collections[0].pathField = "public_path";
+  nextSchema.collections[0].fields.push({ fieldId: "public_path", key: "public_path", label: "Public path", type: "text", placement: "side" });
+  const schemaPlan = await site.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], nextSchema, replacements: [] });
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", {
+    operationId: schemaPlan.plan.operationId, confirmationToken: schemaPlan.plan.confirmationToken
+  });
+  const save = async (draft, title, path) => (await site.read("cms.items.save", {
+    ...versioned(draft), values: { ...values(title), public_path: path }
+  }, { headers: headers() })).item;
+  const source = await save(await createDraft(site, schemaRevision), "Source", "/archive/collision");
+  const collidingJapaneseItem = await save(await createDraft(site, schemaRevision), "Japanese", "/en/archive/collision");
+  await site.read("cms.release.apply", await releasePlan(site, schemaRevision, null, [source, collidingJapaneseItem]));
+  await h.cron();
+
+  const store = new CmsStore(h.env.DB, h.env.CMS_OBJECTS);
+  const scope = { projectId: site.projectId, siteId: site.siteId, actor: { id: OWNER, cli: false } };
+  const publishedSite = await store.site(scope, "cms.publish");
+  assert.ok(publishedSite);
+  const routes = await store.routeTable(publishedSite, "cms.publish", "en");
+  assert.ok(routes.reservations.some(({ kind, path }) => kind === "reserved" && path === "/en/archive/collision"));
+
+  const problems = releaseImpacts({ sourceLocale: "ja", locale: "en", redirects: [],
+    schema: { collections: [{ id: "posts", pathPrefix: "/en/cms/posts/", pathField: "public_path" }] },
+    items: [{ collectionId: "posts", itemId: source.itemId, path: "/en/archive/collision" }] }, routes);
+  assert.ok(problems.some(({ path, code }) => path === "/en/archive/collision" && code === "route"));
 });
 
 testWithD1("Studio CMS renders only assets approved for the published revision", async (t) => {

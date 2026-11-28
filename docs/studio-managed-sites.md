@@ -79,6 +79,8 @@ CLIはtoken、service credential、Access subjectを標準出力へ含めない�
 
 ## CMS
 
+公開 URL は既定で `/s/{slug}/cms` 配下です。CMS v2 でコレクションの `pathField` に text field を指定すると、項目詳細の URL はその値を使い、英語では `/en` を前置します。固定ページ・別の CMS 項目・転送との path 衝突は公開計画で拒否します。
+
 Studio-native site の Dashboard にある「CMS」から、初期コレクション「お知らせ」の項目を編集する。owner はコレクションを追加でき、owner と editor は下書き保存、確認付き公開、公開予約、予約取消、公開の取り下げ、削除、下書きへの復元を行える。公開中の項目は先に取り下げ、予約中の項目は先に予約を取り消す。初期実装は home の言語を CMS 全体に使う。公開リストは `/s/{slug}/cms` と `/s/{slug}/cms/posts`、詳細は `/s/{slug}/cms/posts/{itemSlug}`。固定ページ用にこの名前空間を割り当てることはできない。CMS release はこの route を不変 HTML として生成し、変更項目を使う一覧・詳細 route と discovery artifact を一つの manifest pointer 更新で公開する。本文はテキストで描画し、詳細の画像とギャラリーは snapshot の公開素材 manifest から描画する。素材付き項目の公開には Site の素材 resolver が必要。既定の Worker に resolver は設定していない。[公開素材の manifest](cms-v2-contract.md#公開素材の-manifest)
 
 Studio の共通編集 API と CLI の経路は [CMS v2 契約](cms-v2-contract.md) を参照する。CMS の保存先は Studio の D1 と非公開 R2 binding `CMS_OBJECTS`。Kamakura などの外部ホストの編集先や権限は各ホストで管理する。個人情報・予約台帳・資格情報などは CMS に保存しない。

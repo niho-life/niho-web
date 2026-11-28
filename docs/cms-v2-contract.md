@@ -22,6 +22,8 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `CmsSchema` は Site、`contractVersion: 2`、`schemaRevision`、コレクション定義、引退済み `fieldId` を持ちます。field は同じコレクション内で不変の `fieldId`、既存画面との接続や人が読む名前に使う `key`、表示する `label` をそれぞれ持ちます。項目の正本の値、定義の `titleField` 等の役割、外部の結び付けには `fieldId` を使います。画面の既存 adapter に値を渡すときだけ現在の `key` に変換します。削除済みの `fieldId` は再利用せず、同じ field を名前変更するときは `fieldId` を引き継ぎます。
 
+詳細 URL は既定で `pathPrefix` と `slugField` から作ります。必要なコレクションだけ `pathField` に `text` field を指定すると、その値を項目ごとの正規化済み URL path として使い、一覧 URL は従来の `pathPrefix` に残します。`pathField` はロケール間で翻訳せず、英語の公開 URL を解決するときだけ `/en` を前置します。固定ページ・テンプレート・別項目・転送との衝突は公開計画で拒否し、URL を変更した項目には旧 path からの転送を作ります。
+
 値の形は既存の型と共通です。v2 は知らない `fieldId` を拒否します。`CmsItemRevision` は `siteId`、`locale`、`collectionId`、`itemId`、`schemaRevision`、`revision`、`values` を持ちます。保存するたびにホストが不変の `revision` を発行します。`parseCmsDraftWrite` の `save` は当該定義にそろえた全 field の値を扱います。
 
 項目状態は `draftRevision`、`publishedRevision`、`deliveryState`、`schedule`、`tombstone` を分けます。`cmsWorkspaceItem` はこの状態から既存の `status`、`scheduledAt`、`publishFailed` と値を組み立てます。公開中の版と下書きが違えば「変更あり」です。配信中は「反映中」を優先し、予約時刻と失敗は別に表示します。tombstone のある項目は一覧と読取りから外します。削除の前に公開から外し、配信待ちが終わるまで待ち、予約を取り消します。復元で戻るのは以前の下書きです。再公開には新しい release が必要です。

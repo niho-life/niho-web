@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
-  COLLECTION_BULK_LIMIT, collectionDateFromInput, collectionItemFilter, collectionReorderSequence, isDisplayableImageUrl, moveCollectionIds,
+  COLLECTION_BULK_LIMIT, collectionDateFromInput, collectionItemFilter, collectionPublicPath, collectionReorderSequence, isDisplayableImageUrl, moveCollectionIds,
   parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionEnglishPublicationsReadResult, parseCollectionEnglishPublicationsRetryResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
   parseCollectionRemoveResult, parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult,
   sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
@@ -619,7 +619,8 @@ function safeLink(value: string | null): string | null {
 
 /** 公開中のアドレスの slug（pathPrefix の後ろ）。公開していなければ null。 */
 function publishedSlugOf(definition: CollectionDefinition, item: CollectionItem): string | null {
-  return item.publishedAt !== null && item.path !== null && definition.pathPrefix !== null && item.path.startsWith(definition.pathPrefix) ? item.path.slice(definition.pathPrefix.length) : null;
+  return !definition.pathField && item.publishedAt !== null && item.path !== null && definition.pathPrefix !== null
+    && item.path.startsWith(definition.pathPrefix) ? item.path.slice(definition.pathPrefix.length) : null;
 }
 
 /**
@@ -1033,7 +1034,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   let preview: string | null = null;
   try { preview = adapter.previewUrl ? safeLink(adapter.previewUrl(definition.id, item)) : null; } catch { preview = null; }
   const slugValue = definition.slugField ? values[definition.slugField] : null;
-  const address = definition.pathPrefix !== null && definition.slugField !== null
+  const address = definition.pathField ? collectionPublicPath(definition, values) : definition.pathPrefix !== null && definition.slugField !== null
     ? typeof slugValue === "string" && slugValue.trim() ? `${definition.pathPrefix}${slugValue.trim()}` : null
     : item.path;
   const publishedSlug = publishedSlugOf(definition, item);
@@ -1065,7 +1066,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     } finally { s.uploads.delete(task); }
   };
   const context: FieldContext = {
-    baseId, timeZone, pathPrefix: definition.pathPrefix, isTitle: false, publishedSlug, self: { collectionId: definition.id, itemId },
+    baseId, timeZone, pathPrefix: definition.pathField ? null : definition.pathPrefix, isTitle: false, publishedSlug, self: { collectionId: definition.id, itemId },
     redirect: capabilities.redirects && publishedSlug !== null && item.path !== null ? { from: item.path, checked: redirect, onChange: setRedirect } : null,
     imageSrc: (image, width) => displayImage(image, width, adapter.imageUrl ? (value, size) => adapter.imageUrl!(value, size) : undefined),
     upload, uploadAsset, references, retryReferences, renderRichText, sanitize,
@@ -1116,7 +1117,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
             <div><dt>状態</dt><dd><StatusBadges status={status} scheduledAt={item.scheduledAt} publishFailed={item.publishFailed} timeZone={timeZone} /></dd></div>
             <div><dt>公開日時</dt><dd><DateTime value={item.publishedAt} timeZone={timeZone} empty="まだ公開していません" /></dd></div>
             <div><dt>最終更新</dt><dd><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by"> · {item.updatedBy}</span>}</dd></div>
-            {(definition.slugField !== null || item.path !== null) && <div><dt>アドレス</dt><dd className="cw-address">{address ?? "まだ決まっていません"}</dd></div>}
+            {(definition.pathField || definition.slugField !== null || item.path !== null) && <div><dt>アドレス</dt><dd className="cw-address">{address ?? "まだ決まっていません"}</dd></div>}
           </dl>
           {canSchedule && (item.scheduledAt !== null
             ? <div className="cw-schedule"><p><strong>公開予定</strong> <time dateTime={item.scheduledAt}>{formatDateTime(item.scheduledAt, timeZone)}</time>（{zoneLabel(timeZone)}）</p>

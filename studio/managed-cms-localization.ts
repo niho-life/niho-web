@@ -3,6 +3,7 @@ import {
   type CmsLocalizationOverlay, type CmsItemRevision, type CmsSchema
 } from "../src/cms-v2.js";
 import { cmsCollection } from "../src/cms-v2-schema.js";
+import { collectionPublicPath } from "../src/collection-model.js";
 import { richMarks, type LocalizationItem, type LocalizationItemSummary, type LocalizationOverview, type LocalizationWorkspaceUnit } from "../src/localization-workspace-model.js";
 
 export type CmsLocalizationView = {
@@ -42,13 +43,12 @@ function title(view: CmsLocalizationView): string {
 export function cmsLocalizationSummary(view: CmsLocalizationView): LocalizationItemSummary {
   const status = cmsLocalizationStatus(view.overlay, view.collection);
   const definition = cmsCollection(view.schema, view.source.collectionId);
-  const slug = definition.slugField === null ? null : view.source.values[definition.slugField];
   const translated = status.units - status.missing;
   const state = view.collection.issues.length > 0 ? "excluded" : status.complete ? "reviewed" : status.reviewNeeded > 0 ? "source-changed"
     : translated > 0 ? "draft" : "untranslated";
   return {
     key: cmsLocalizationItemKey(view.source.collectionId, view.source.itemId), groupId: view.source.collectionId, title: title(view),
-    path: definition.pathPrefix && typeof slug === "string" && slug ? `${definition.pathPrefix}${slug}` : null,
+    path: collectionPublicPath(definition, view.source.values),
     state, excludedReason: view.collection.issues.length ? "リッチテキストの安全な翻訳adapterが未接続です。" : null,
     totalUnits: status.units, reviewedUnits: translated, imagesUnreviewed: 0,
     sourceDraftPending: view.sourceDraftPending, updatedAt: view.updatedAt ?? null, updatedBy: null

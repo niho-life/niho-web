@@ -1,5 +1,6 @@
 import { DocumentValidationError, fail, keys, parseAssetReference, record, string } from "./validation-utils.js";
 import { parseEnglishPublication, type EnglishPublication } from "./english-publication.js";
+import { validCmsItemPath } from "./cms-v2-routes.js";
 import type { AssetReference } from "./types.js";
 
 /* ---------- 型（React 不要） ---------- */
@@ -62,6 +63,8 @@ export type CollectionDefinition = {
   readonly ordering: CollectionOrdering;
   /** 公開時のアドレスの前（例 "/posts/"）。アドレス欄の表示に使う。 */
   readonly pathPrefix: string | null;
+  /** 指定時はこのテキストフィールドの値を項目の公開パスとして使う。 */
+  readonly pathField?: string | null;
   readonly titleField: string;
   readonly slugField: string | null;
   readonly imageField: string | null;
@@ -93,6 +96,16 @@ export type CollectionGalleryEntry = { readonly id: string; readonly image: Coll
 /** text・longText・url・slug・richText は string、image は安定素材参照/移行前 URL/null、datetime は string|null、gallery は CollectionGalleryEntry[]。 */
 export type CollectionValue = string | null | AssetReference | readonly string[] | readonly CollectionGalleryEntry[];
 export type CollectionValues = Readonly<Record<string, CollectionValue>>;
+
+/** Resolve an item's URL path using the field names of the supplied definition and values. */
+export function collectionPublicPath(definition: Pick<CollectionDefinition, "pathField" | "pathPrefix" | "slugField">,
+  values: CollectionValues, localizedPathPrefix = ""): string | null {
+  const { pathField, pathPrefix, slugField } = definition;
+  const value = pathField ? values[pathField] : slugField ? values[slugField] : undefined;
+  const prefix = pathField ? localizedPathPrefix : pathPrefix;
+  if (prefix === null || typeof value !== "string" || !value || pathField && (!value.startsWith("/") || value === "/")) return null;
+  return validCmsItemPath(prefix + value);
+}
 export type CollectionItem = CollectionItemSummary & { readonly version: string; readonly values: CollectionValues };
 export type CollectionFieldError = { readonly field: string; readonly message: string };
 
@@ -353,7 +366,7 @@ function fieldRef(value: unknown, fields: readonly CollectionField[], types: rea
 
 function parseDefinition(input: unknown, path: string): CollectionDefinition {
   const source = record(input, path);
-  keys(source, ["id", "label", "addLabel", "icon", "ordering", "pathPrefix", "titleField", "slugField", "imageField", "subtitleField", "capabilities", "fields"], path);
+  keys(source, ["id", "label", "addLabel", "icon", "ordering", "pathPrefix", "pathField", "titleField", "slugField", "imageField", "subtitleField", "capabilities", "fields"], path);
   const fields = array(source.fields, `${path}.fields`, 100).map((field, index) => parseField(field, `${path}.fields[${index}]`));
   if (!fields.length) fail(`${path}.fields`, "a collection needs fields");
   if (new Set(fields.map((field) => field.key)).size !== fields.length) fail(`${path}.fields`, "duplicate field key");
@@ -378,6 +391,7 @@ function parseDefinition(input: unknown, path: string): CollectionDefinition {
     ...(icon === undefined ? {} : { icon: icon as CollectionIcon }),
     ordering,
     pathPrefix,
+    ...(source.pathField == null ? {} : { pathField: fieldRef(source.pathField, fields, ["text"], `${path}.pathField`, false)! }),
     titleField: fieldRef(source.titleField, fields, ["text"], `${path}.titleField`, false)!,
     slugField: fieldRef(source.slugField, fields, ["slug"], `${path}.slugField`, true),
     imageField: fieldRef(source.imageField, fields, ["image"], `${path}.imageField`, true),

@@ -194,6 +194,7 @@ export async function collectCmsLocalizationUnits(schemaInput: unknown, itemInpu
     sourceLocale: source.locale, targetLocale: target.locale };
   const collection = cmsCollection(schema, item.collectionId), fields: CmsLocalizationField[] = [], issues: CmsLocalizationIssue[] = [];
   for (const field of collection.fields) {
+    if (field.fieldId === collection.pathField) continue;
     const raw = item.values[field.fieldId];
     if (TRANSLATABLE_TEXT_TYPES.has(field.type)) {
       if (typeof raw !== "string" || raw === "") continue;
