@@ -81,7 +81,7 @@ export const pageCmsBindingsSchema = nullable(obj({
   schemaVersion: { const: 1 }, siteId: id, pageId: id, locale: text,
   lists: list(obj({ templateNodeId: id, collectionId: cmsIdentifier, fields: cmsFieldBindings,
     limit: { type: "integer", minimum: 1, maximum: 25 } }, {
-    filter: obj({ fieldId: cmsIdentifier, equals: text }), order: obj({ fieldId: cmsIdentifier, direction: valuesOf(["asc", "desc"]) })
+    filter: either(obj({ fieldId: cmsIdentifier, equals: text }), obj({ fieldId: cmsIdentifier, includes: text })), order: obj({ fieldId: cmsIdentifier, direction: valuesOf(["asc", "desc"]) })
   }), 0, 12)
 }, { detail: obj({ collectionId: cmsIdentifier, slugFieldId: cmsIdentifier, fields: cmsFieldBindings }, { basePath: text }) }));
 const breakpoint = either(constant("base"), widthSchema);

@@ -98,7 +98,7 @@ function BindingForm({ adapter, target, document, version, saved, selectedNode, 
     {working.lists.map((list, index) => {
       const collection = collections.find(({ id }) => id === list.collectionId);
       const sortFields = collection?.fields.filter(({ type }) => ["text", "longText", "datetime", "slug"].includes(type)) ?? [];
-      const filterFields = collection?.fields.filter((field) => sortFields.includes(field) || field.type === "select" && !field.multiple) ?? [];
+      const filterFields = collection?.fields.filter((field) => sortFields.includes(field) || field.type === "select" || field.type === "reference") ?? [];
       const filterField = filterFields.find(({ fieldId }) => fieldId === list.filter?.fieldId);
       return <details key={list.templateNodeId} open>
         <summary>CMS リスト {index + 1}</summary>
@@ -112,11 +112,11 @@ function BindingForm({ adapter, target, document, version, saved, selectedNode, 
         <label className="e-field"><span>表示件数</span><input type="number" min={1} max={25} value={list.limit || ""} onChange={(event) => replaceList(index, { ...list, limit: Number(event.target.value) })} /></label>
         <label className="e-field"><span>絞り込むフィールド</span><select value={list.filter?.fieldId ?? ""} onChange={(event) => {
           const { filter: _filter, ...without } = list;
-          replaceList(index, event.target.value ? { ...without, filter: { fieldId: event.target.value, equals: "" } } : without);
+          replaceList(index, event.target.value ? { ...without, filter: { fieldId: event.target.value, ...(["reference"].includes(collection?.fields.find(({ fieldId }) => fieldId === event.target.value)?.type ?? "") || collection?.fields.some((field) => field.fieldId === event.target.value && field.type === "select" && field.multiple) ? { includes: "" } : { equals: "" }) } } : without);
         }}><option value="">絞り込みなし</option>{filterFields.map(({ fieldId, label }) => <option key={fieldId} value={fieldId}>{label}</option>)}</select></label>
-        {list.filter && <label className="e-field"><span>一致する値</span>{filterField?.type === "select"
-          ? <select value={list.filter.equals} onChange={(event) => replaceList(index, { ...list, filter: { fieldId: list.filter!.fieldId, equals: event.target.value } })}><option value="">選択</option>{filterField.options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select>
-          : <input value={list.filter.equals} onChange={(event) => replaceList(index, { ...list, filter: { fieldId: list.filter!.fieldId, equals: event.target.value } })} />}</label>}
+        {list.filter && <label className="e-field"><span>{"includes" in list.filter ? "含む値" : "一致する値"}</span>{filterField?.type === "select"
+          ? <select value={"includes" in list.filter ? list.filter.includes : list.filter.equals} onChange={(event) => replaceList(index, { ...list, filter: "includes" in list.filter! ? { fieldId: list.filter!.fieldId, includes: event.target.value } : { fieldId: list.filter!.fieldId, equals: event.target.value } })}><option value="">選択</option>{filterField.options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select>
+          : <input value={"includes" in list.filter ? list.filter.includes : list.filter.equals} onChange={(event) => replaceList(index, { ...list, filter: "includes" in list.filter! ? { fieldId: list.filter!.fieldId, includes: event.target.value } : { fieldId: list.filter!.fieldId, equals: event.target.value } })} />}</label>}
         <label className="e-field"><span>並べ替えるフィールド</span><select value={list.order?.fieldId ?? ""} onChange={(event) => {
           const { order: _order, ...without } = list;
           replaceList(index, event.target.value ? { ...without, order: { fieldId: event.target.value, direction: "desc" } } : without);

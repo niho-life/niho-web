@@ -71,7 +71,7 @@ niho-edit --studio --origin https://studio.example --site site-id publish --chan
 | `.niho/state.json` | CLI だけが書く。各ファイルの種別・識別子・版・内容の hash・CMS 保存の操作 ID |
 | `.niho/context.json` | `check` が使う読取専用の文脈（ブレークポイント設定、公開パス一覧） |
 
-版と操作 ID は `.niho/state.json` にだけあり、編集するファイルには含めません。ページに紐づく CMS binding（`cmsBindings`）はファイルに含めません。変更は `apply --cms-bindings` で行います。素材（画像）は `pull` せず、参照の ID だけを置きます。アップロードは `assets-upload` です。
+版と操作 ID は `.niho/state.json` にだけあり、編集するファイルには含めません。ページに紐づく CMS binding（`cmsBindings`）はファイルに含めません。変更は `apply --cms-bindings` で行います。一覧の `filter` は `{ fieldId, equals }` か、参照・複数選択の select 用の `{ fieldId, includes }` です。素材（画像）は `pull` せず、参照の ID だけを置きます。アップロードは `assets-upload` です。
 
 機械認証の grant は、`pull` に `pages.read`・`site.settings.read`・`cms.read`、`push` に `pages.edit`・`site.settings.write`・`cms.edit` が要ります。どれかが無いと `pull` は 403 で止まります。
 
