@@ -285,6 +285,31 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
   } finally { await app.cleanup(); }
 });
 
+test("editing a lower tier says so when a higher tier's value is what the shown width uses", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].style.responsive = [{ minWidth: 768, declarations: { width: "50%" } }];
+  const app = await setup({ document: page });
+  try {
+    await clickLayer("section · hero"); await editorTab("ボックス");
+    await change(document.querySelector('[aria-label="表示幅"]'), "1440");
+    await change(input("幅", right()), "80%");
+    const notice = document.querySelector(".e-notice")?.textContent ?? "";
+    assert.ok(notice.includes("すべての幅に保存しました"), notice);
+    assert.ok(notice.includes("表示中の 1440px では タブレット 768px〜 の値が使われる"), notice);
+    assert.ok(notice.includes("表示中の段を編集"), notice);
+  } finally { await app.cleanup(); }
+});
+
+test("editing a lower tier says nothing when no higher tier overrides the property", async () => {
+  const app = await setup();
+  try {
+    await clickLayer("section · hero"); await editorTab("ボックス");
+    await change(document.querySelector('[aria-label="表示幅"]'), "1440");
+    await change(input("幅", right()), "80%");
+    assert.equal(document.querySelector(".e-notice"), null);
+  } finally { await app.cleanup(); }
+});
+
 test("the compact tier disclosure and explicit alignment controls keep viewport, axis, undo and position behavior", async () => {
   const source = structuredClone(fixture);
   Object.assign(source.body[0].style.base, { flexDirection: "row-reverse", justifyContent: "flex-start", alignItems: "flex-end", position: "static", zIndex: 2, overflow: "hidden" });

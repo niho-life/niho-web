@@ -313,11 +313,11 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
 }) {
   const [body, setBody] = useState<HTMLElement | null>(null), frame = useRef<HTMLIFrameElement>(null);
   const previousPageKey = useRef(pageKey);
-  const [editingId, setEditingId] = useState<string | null>(null), [dropPlace, setDropPlace] = useState<DropPlace | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null), [nodeGenerations, setNodeGenerations] = useState<Readonly<Record<string, number>>>({}), [dropPlace, setDropPlace] = useState<DropPlace | null>(null);
   const [handleRect, setHandleRect] = useState<{ element: HTMLElement; left: number; top: number; width: number; height: number } | null>(null);
   const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
-  const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
+  const originalHtml = useRef(""), stopping = useRef(false), savedRange = useRef<Range | null>(null);
   const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
   const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
   useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
@@ -453,16 +453,25 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
     return () => { startTextEdit.current = null; };
   });
   function stopEditing(commit: boolean) {
+    // contenteditable を外すと blur が起き、確定の stopEditing が入れ子で呼ばれる。取り消しの途中で確定しないよう、入れ子の呼び出しは無視する。
+    if (stopping.current) return;
     if (!body || !editing || editing.node.type !== "element") { if (editingId) pending(`direct-${editingId}`, false); setEditingId(null); return; }
     const element = Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]")).find((item) => item.dataset.nwNode === editingId && item.dataset.nwOwner === scope);
     if (!element) { pending(`direct-${editingId}`, false); setEditingId(null); return; }
-    if (commit) {
-      try {
-        const problem = editText(editing.path, editing.node.id, readEditableChildren(element, editing.node, presentation?.links));
-        if (problem) element.innerHTML = originalHtml.current;
-      } catch (error) { element.innerHTML = originalHtml.current; reportError(error instanceof Error ? error.message : "文字の変更を適用できませんでした。"); }
-    } else element.innerHTML = originalHtml.current;
-    element.removeAttribute("contenteditable"); pending(`direct-${editingId}`, false); setEditingId(null); setLinkOpen(false); setLinkError("");
+    stopping.current = true;
+    try {
+      let restore = !commit;
+      if (commit) {
+        try {
+          restore = !!editText(editing.path, editing.node.id, readEditableChildren(element, editing.node, presentation?.links));
+        } catch (error) { restore = true; reportError(error instanceof Error ? error.message : "文字の変更を適用できませんでした。"); }
+      }
+      // 取り消し・失敗では、作り直すまでの間も元の文字を見せる。
+      if (restore) element.innerHTML = originalHtml.current;
+      // ブラウザの編集や書き戻しで React の子節点が切り離されるため、確定・取り消し・失敗のどれでもその要素を作り直させる。
+      const id = editing.node.id; setNodeGenerations((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+      element.removeAttribute("contenteditable"); pending(`direct-${editingId}`, false); setEditingId(null); setLinkOpen(false); setLinkError("");
+    } finally { stopping.current = false; }
   }
   function placeAt(event: React.DragEvent<HTMLElement>): DropPlace {
     const target = ownerElement(asElement(event.target)?.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node]`) ?? null);
@@ -500,7 +509,7 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
     format("createLink", linkHref); setLinkOpen(false); setLinkError("");
     const element = body?.querySelector<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${editingId}"]`); element?.focus();
   }
-  const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
+  const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview", nodeGenerations }), [viewportHeight, siteOrigin, mode, nodeGenerations]);
   const defaultPreview = presentation
     ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
     : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
@@ -2093,12 +2102,26 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const destinationId = place ? place.parentId : parentId || (formPart ? selectedFormId : null);
       const destination = destinationId ? walkNodes(currentDocument()!).find(({ node }) => node.type === "element" && node.id === destinationId)?.node : undefined;
       const children = formPart && destination?.type === "element" && destination.tag === "form" && newNode.type === "element" && newNode.tag === "form" ? newNode.children : undefined;
-      const operation: EditorOperation = children
-        ? { type: "addMany", parentId: destinationId, nodes: children, ...(place ? { index: place.index } : {}) }
-        : { type: "add", parentId: destinationId, node: newNode, ...(place ? { index: place.index } : {}) };
-      const error = apply(operation);
+      // 追加先を指定していないときは、選択中の要素のすぐ後ろへ足す。足せない場所なら従来どおりページの末尾へ足す。
+      let after: Pick<DropPlace, "parentId" | "index"> | undefined;
+      if (!place && !parentId && !(formPart && selectedFormId) && selection && selectedTarget && selectedTarget.type !== "text" && !canvasOrigins.has(selectedTarget.id)) {
+        const parentNode = selection.length > 1 ? nodeAt(currentDocument()!, selection.slice(0, -1)) : undefined;
+        if (!parentNode || parentNode.type === "element" && !canvasOrigins.has(parentNode.id)) after = { parentId: parentNode?.id ?? null, index: selection.at(-1)! + 1 };
+      }
+      const build = (position: Pick<DropPlace, "parentId" | "index"> | undefined): EditorOperation => {
+        const parent = position ? position.parentId : destinationId, at = position ?? place;
+        return children
+          ? { type: "addMany", parentId: parent, nodes: children, ...(at ? { index: at.index } : {}) }
+          : { type: "add", parentId: parent, node: newNode, ...(at ? { index: at.index } : {}) };
+      };
+      let error = apply(build(after));
+      if (error && after) error = apply(build(undefined));
       const selected = children?.find((child) => child.type === "element" && ["input", "textarea", "select", "button", "fieldset"].includes(child.tag));
-      if (error) setNotice(error); else if (selected?.type === "element") selectId(selected.id); else if (newNode.type !== "text") selectId(newNode.id);
+      if (error) setNotice(error);
+      else {
+        const target = selected?.type === "element" ? selected : newNode.type !== "text" ? newNode : undefined;
+        if (target) { selectId(target.id); setCanvasReveal({ target: documentKey, id: target.id }); }
+      }
     } catch (error) { setNotice(message(error)); }
   }
   function planMoveBatch(ids: readonly string[], parentId: string | null, index: number, base = currentDocument()): EditorOperation[] | string {

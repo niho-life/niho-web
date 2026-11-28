@@ -310,9 +310,11 @@ export function parseStyle(value: unknown, tokens: Record<string, DesignToken>, 
   if (source.hidden !== undefined) result.hidden = parseHidden(source.hidden, `${path}.hidden`);
   return result;
 }
+/** 1 つの文書（共通の枠を包んだ公開用の文書も含む）が持てるテキストスタイルの数。 */
+export const MAX_TEXT_STYLES = 64;
 export function parseTextStyles(value: unknown, tokens: Record<string, DesignToken>, path: string): Record<string, TextStyle> {
   const source = record(value, path), result: Record<string, TextStyle> = {};
-  if (Object.keys(source).length > 64) fail(path, "too many text styles");
+  if (Object.keys(source).length > MAX_TEXT_STYLES) fail(path, "too many text styles");
   for (const [name, raw] of Object.entries(source)) {
     tokenName(name, path);
     const at = `${path}.${name}`, entry = record(raw, at);

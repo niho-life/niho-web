@@ -7,6 +7,7 @@ import { prepareManagedCmsStaticRoutes } from "./managed-cms-static.js";
 import { MAX_MANAGED_PAGE_BYTES, readPageSource, readPageSourceObject, storePageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parsePageDocument, type PageDocument } from "../src/core.js";
 import { cmsDetailBaseInvalid, cmsDetailBasePath, cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
+import { cmsDraftMatchesPublishedValues } from "./managed-cms-model.js";
 import { cmsRichTextProjection } from "./managed-cms-rich-text.js";
 import { cmsId, cmsItemKey } from "../src/cms-v2-schema.js";
 import type { CmsItemRevision, CmsReleaseSnapshot } from "../src/cms-v2.js";
@@ -1131,13 +1132,18 @@ async function managedCmsPublication(store: CmsStore, actor: ManagedActor, proje
     const revision = published.get(key);
     return revision === meta.revision ? [] : [{ meta, reason: revision === undefined ? "new" as const : "draft" as const }];
   });
-  const drafts = await Promise.all(metas.map(async ({ meta, reason }): Promise<ManagedCmsDraft> => {
-    const item = await store.item(siteId, site.state.locale, meta);
+  const publishedItems = new Map((current?.items ?? []).map((pin) => [cmsItemKey(pin), pin]));
+  const loaded = await Promise.all(metas.map(async ({ meta, reason }) => ({ item: await store.item(siteId, site.state.locale, meta), reason })));
+  // 下書きの revision が公開版と違っても、値が同じなら未公開の変更として扱わない。
+  const drafts = loaded.filter(({ item, reason }) => {
+    const pinned = reason === "draft" && current ? publishedItems.get(cmsItemKey(item)) : undefined;
+    return !pinned || !cmsDraftMatchesPublishedValues(current!.schema, item.collectionId, item.values, pinned.values);
+  }).map(({ item, reason }): ManagedCmsDraft => {
     const collection = site.state.schema.collections.find(({ id }) => id === item.collectionId);
     if (!collection) throw new Error("CMS collection unavailable");
     return { item, reason, path: collectionPublicPath(collection, item.values),
       title: (String(item.values[collection.titleField] ?? "") || item.itemId).slice(0, 200) };
-  }));
+  });
   return { site, current, pending, drafts };
 }
 
@@ -1188,7 +1194,7 @@ async function managedPublicationSnapshot(store: CmsStore, actor: ManagedActor, 
     let reason: "new" | "draft" | "path" | "visibility" | null = null;
     if (page.visibility === "private" && wasPublic || page.visibility === "public" && !wasPublic && page.published_revision !== null) reason = "visibility";
     else if (page.visibility === "public" && !wasPublic && page.published_revision === null) reason = "new";
-    else if (page.visibility === "public" && wasPublic && publishedPath !== undefined && publishedPath !== livePath) reason = "path";
+    else if (page.visibility === "public" && wasPublic && publishedPath != null && publishedPath !== livePath) reason = "path";
     else if (page.visibility === "public" && (!wasPublic || page.published_revision === null || page.current_revision !== (publishedRoute?.sourceRevision ?? page.published_revision))) reason = page.published_revision === null ? "new" : "draft";
     if (reason) changes.push({ kind: "page", target: { siteId, pageId: page.page_id, locale: page.locale }, title: page.title, path: page.path, reason });
   }

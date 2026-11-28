@@ -2827,6 +2827,7 @@ testWithD1("Kamakura import publishes rich text bodies and their translations as
   assert.equal((await site.read("cms.localization.release.current")).snapshot.items.length, 1);
   const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
   const pending = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.publication-changes"), 200);
+  assert.equal(pending.changes.some(({ reason }) => reason === "path"), false, "a site with no publication record does not report a URL change");
   assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "POST", operations + "site.publish",
     { expectedVersion: pending.version, scope: "all" }), 200)).status, "released");
   const publicHtml = async (path) => {
@@ -3256,6 +3257,17 @@ testWithD1("publish --changed releases CMS items with the pages in one switch", 
   assert.equal((await f.history()).releases.length, releasesBefore + 1);
   assert.equal(h.sqlite.prepare("SELECT cms_release_id FROM managed_page_publications WHERE site_id = ? AND page_id = 'home' ORDER BY created_at DESC, rowid DESC LIMIT 1")
     .get(site.siteId).cms_release_id, current.releaseId, "the list page records the new CMS release");
+});
+
+testWithD1("publication changes leave out a CMS item saved again with its published values", async (t) => {
+  const f = await cmsChangedFixture(t, "cms-same-values");
+  const { site } = f;
+  const published = (await site.read("cms.release.current")).snapshot.items.find((item) => item.itemId === f.first.itemId);
+  const edited = (await site.read("cms.items.save", { ...versioned(f.first), values: values("First post v2", "first") }, { headers: headers() })).item;
+  assert.deepEqual((await f.changes()).changes.filter(({ kind }) => kind === "cms").map(({ target }) => target.itemId), [f.first.itemId]);
+  const restored = (await site.read("cms.items.save", { ...versioned(edited), values: values("First post", "first") }, { headers: headers() })).item;
+  assert.notEqual(restored.revision, published.revision, "the draft is a new revision");
+  assert.deepEqual((await f.changes()).changes.filter(({ kind }) => kind === "cms"), []);
 });
 
 testWithD1("publish --changed leaves CMS items out while a CMS release is waiting", async (t) => {
