@@ -378,22 +378,26 @@ async function finalizeImport(scope: Scope, verified: boolean) {
   }));
   const targetRevisions = await Promise.all(sourceItems.map(async ({ collectionId, itemId }) => ({ collectionId, itemId,
     revision: `rev_import_${await siteImportDigest([run.plan_digest, targetLocale, collectionId, itemId])}` })));
-  const localizedContext = await localizationReleaseContext(store, site, targetLocale);
+  const at = dateNow(), released = source.proposal.snapshot;
+  const putRelease = (snapshot: typeof released) => Promise.all([
+    store.put(routeTableKey(target.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable),
+    store.put(snapshotKey(target.siteId, snapshot.releaseId), snapshot)
+  ]);
+  // 翻訳先は、これから確定する原文 release の公開パスも予約済みとして計画する。
+  await putRelease(released);
+  const localizedContext = await localizationReleaseContext(store, { ...site, state: { ...site.state,
+    current: { id: released.releaseId, at }, routeTableRevision: released.routeTable.revision } }, targetLocale);
   const localized = await planCmsLocalizationRelease({ schema: site.state.schema, sourceLocale: site.state.locale, targetLocale, sourceItems,
     overlays, targetRevisions, redirects: [], routeTableRevision: localizedContext.routeTable.revision, expectedReleaseId: null,
     releaseId: opaque(`${releasePrefix}${targetLocale}`), context: localizedContext,
     publicAssets: (schema, entries) => store.publicAssets(schema, entries) });
   if (localized.status !== "ready") return localized.status === "invalid" ? { error: "invalid_import", problems: localized.problems } : conflict();
-  const snapshots = [source.proposal.snapshot, localized.proposal.snapshot];
+  const translatedRelease = localized.proposal.snapshot, snapshots = [released, translatedRelease];
   const retainedBytes = site.state.retainedBytes + localized.revisions.reduce((total, item) => total + blobSize(item), 0)
     + snapshots.reduce((total, snapshot) => total + blobSize(snapshot) + blobSize(snapshot.routeTable), 0);
   if (snapshots.some((snapshot) => blobSize(snapshot) > MAX_SNAPSHOT) || retainedBytes > MAX_RETAINED_BYTES) return conflict();
-  await Promise.all([
-    ...snapshots.flatMap((snapshot) => [store.put(routeTableKey(target.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable),
-      store.put(snapshotKey(target.siteId, snapshot.releaseId), snapshot)]),
-    ...localized.revisions.map((item) => store.put(itemBlobKey(target.siteId, targetLocale, item), item))
-  ]);
-  const at = dateNow(), released = source.proposal.snapshot, translatedRelease = localized.proposal.snapshot;
+  await Promise.all([putRelease(translatedRelease),
+    ...localized.revisions.map((item) => store.put(itemBlobKey(target.siteId, targetLocale, item), item))]);
   const state: CmsState = { ...site.state, retainedBytes, current: { id: released.releaseId, at }, routeTableRevision: released.routeTable.revision,
     localizedReleases: { [targetLocale]: { id: translatedRelease.releaseId, at, routeTableRevision: translatedRelease.routeTable.revision } } };
   const generation = opaque("tx");

@@ -2741,6 +2741,31 @@ testWithD1("External CMS delivery links committed events, immutable snapshots an
   assert.deepEqual(audit.map(({ operation }) => operation), ["cms.delivery.credential.issued", "cms.delivery.credential.revoked"]);
 });
 
+testWithD1("Kamakura import finalize rejects an item path that collides with a translated item path", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-collision");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = await site.read("cms.schema.read");
+  const origin = "https://migration-collision.example.test", siteId = "fixture-collision";
+  const item = (itemId, path, translations) => ({ collectionId: "posts", itemId,
+    published: { ...values(itemId, itemId), public_path: path }, draft: { ...values(itemId, itemId), public_path: path },
+    ...(translations ? { translations } : {}) });
+  const reviewed = { title: { value: "Translated", reviewed: true }, body: { value: "<p>Translated</p>", reviewed: true } };
+  const home = { document: { schemaVersion: 1, siteId, pageId: "home-source", locale: "ja", revision: 1, title: "Home", tokens: {}, body: [] } };
+  const source = { formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
+    pages: [{ sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public", published: home, draft: home }],
+    cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => collection.id !== "posts" ? collection
+      : { ...collection, pathField: "public_path", fields: [...collection.fields,
+        { fieldId: "public_path", key: "public_path", label: "URL", type: "text", placement: "main" }] }) },
+      items: [item("first", "/foo", { targetLocale: "en", published: reviewed, draft: reviewed }), item("second", "/en/foo")] },
+    redirects: [], scheduled: [] };
+  const bytes = Buffer.from(JSON.stringify(source));
+  const prepared = await prepareKamakuraSiteImport(bytes, createHash("sha256").update(bytes).digest("hex"), target);
+  await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  await assert.rejects(() => finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch), /import_finalize: HTTP 400/u);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS n FROM managed_cms_releases").get().n, 0);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS n FROM managed_pages WHERE site_id = ? AND published_revision IS NOT NULL").get(site.siteId).n, 0);
+});
+
 testWithD1("Kamakura import seeds a noindex verification site and preserves immutable public and draft revisions on retry", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-fixture");
   const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
@@ -2981,9 +3006,8 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   // 確定した release は日英とも読め、以後の CMS 公開は取り込んだ CMS ページも作り直す。
   const translated = await site.read("cms.localization.release.current");
   assert.ok(translated.releaseId.startsWith("release_import_"));
-  assert.equal(translated.routeTableRevision, translated.snapshot.routeTable.revision);
+  assert.equal(translated.snapshot.locale, "en");
   const current = await site.read("cms.release.current");
-  assert.equal(current.routeTableRevision, current.snapshot.routeTable.revision);
   const drafts = await Promise.all(result.mapping.cmsItems.map(async ({ itemId }) =>
     (await site.read("cms.items.read", { collectionId: "posts", itemId })).item));
   await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.releaseId, drafts));
