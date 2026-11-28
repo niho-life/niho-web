@@ -33,12 +33,13 @@ function AssetPickerDialog({ assets, siteId, onPick, onClose }: {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [accept, setAccept] = useState<readonly string[]>(INSERTABLE_IMAGE_TYPES);
+  const [maxBytes, setMaxBytes] = useState<number | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const load = (next: string | undefined, signal: AbortSignal) => assets.listAssets({ siteId, search: "", kind: "image", folderId: null, limit: 60, ...(next ? { cursor: next } : {}) }, signal)
     .then((result) => {
       setItems((previous) => next ? [...previous, ...result.assets] : result.assets);
       setCursor(result.nextCursor);
-      if (result.upload) setAccept(result.upload.accept);
+      if (result.upload) { setAccept(result.upload.accept); setMaxBytes(result.upload.maxBytes); }
       setState("ready");
     }, () => { if (!signal.aborted) setState("error"); });
   useEffect(() => {
@@ -48,6 +49,9 @@ function AssetPickerDialog({ assets, siteId, onPick, onClose }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assets, siteId]);
   const upload = async (file: File) => {
+    // 送る前に形式と大きさを確かめる。大きな写真を全部送ってから断られないように。
+    if (!accept.includes(file.type)) { setMessage(REJECTIONS.type); if (input.current) input.current.value = ""; return; }
+    if (maxBytes !== null && file.size > maxBytes) { setMessage(REJECTIONS.size); if (input.current) input.current.value = ""; return; }
     setBusy(true); setMessage("");
     try {
       const result = await assets.uploadAsset({ siteId, folderId: null, file, name: file.name, mimeType: file.type, bytes: file.size }, new AbortController().signal);

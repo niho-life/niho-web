@@ -229,9 +229,10 @@
 .studio-cms-gallery { display: grid; gap: .75rem; padding-inline-start: 1.25rem; }
 .studio-cms-picker { display: grid; gap: .75rem; border: 1px solid var(--nw-border-strong); background: var(--nw-bg); padding: .75rem; }
 .studio-cms-picker-grid { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: .5rem; padding: 0; margin: 0; max-height: 20rem; overflow: auto; }
-.studio-cms-picker-grid button { display: grid; gap: .25rem; width: 100%; text-align: start; }
+/* .nw-project-view button（inline-flex）より強くし、画像・名前・容量を縦に並べる。 */
+.studio-cms-picker .studio-cms-picker-grid button { display: grid; justify-items: stretch; align-items: start; gap: .25rem; width: 100%; min-width: 0; padding: .375rem; text-align: start; }
 .studio-cms-picker-grid img { width: 100%; height: 6rem; object-fit: cover; }
-.studio-cms-picker-grid span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-cms-picker-grid span, .studio-cms-picker-grid small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .studio-native-cms-item p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .studio-native-cms-schema { display: grid; gap: .9rem; }
 .studio-native-cms-schema label { display: grid; gap: .25rem; align-content: start; }
