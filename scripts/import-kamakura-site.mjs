@@ -296,18 +296,36 @@ function originalAssets(plan) {
   return new Map(plan.assets.map(({ contentSha256, byteLength }) => [contentSha256, byteLength]));
 }
 
-export async function applyKamakuraSiteImport(prepared, origin, token, fetcher = fetch, loadAsset) {
+function importClient(prepared, origin, token, fetcher) {
   if (!isSafeHttpsOrigin(origin) || origin === prepared.target.verificationOrigin) throw new Error("invalid_studio_origin");
   if (typeof token !== "string" || !/^[\x21-\x7e]{1,4096}$/u.test(token)) throw new Error("missing_studio_token");
-  const { target, sourceDigest, plan, pages, cmsItems, mapping } = prepared;
+  const { target, sourceDigest } = prepared;
   const endpoint = `${origin}/api/edit/v2/sites/${encodeURIComponent(target.siteId)}/operations/site.migration-import`;
-  async function request(action, payload, index) {
+  async function request(action, payload, index, timeout = 30_000) {
     const response = await fetcher(endpoint, { method: "POST", redirect: "error", credentials: "omit", cache: "no-store",
-      signal: AbortSignal.timeout(30_000), headers: { "cf-access-token": token, "content-type": "application/json" },
+      signal: AbortSignal.timeout(timeout), headers: { "cf-access-token": token, "content-type": "application/json" },
       body: JSON.stringify({ target, sourceDigest, action, payload }) });
     if (!response.ok) throw new Error(`import_${action}${index === undefined ? "" : `[${index}]`}: HTTP ${response.status}`);
     return response.json();
   }
+  return { endpoint, request };
+}
+
+/** 取込を終えたサイトの公開版を、次の全ページ公開の対象にします。公開はしません。 */
+export async function finalizeKamakuraSiteImport(prepared, origin, token, fetcher = fetch) {
+  const { request } = importClient(prepared, origin, token, fetcher);
+  const planDigest = await siteImportDigest(prepared.plan);
+  const receipt = await request("finalize", {}, undefined, 90_000);
+  if (receipt.status !== "finalized" || receipt.siteId !== prepared.target.siteId || receipt.sourceDigest !== prepared.sourceDigest
+    || receipt.planDigest !== planDigest || receipt.publishedPages !== prepared.pages.filter((page) => page.published).length) {
+    throw new Error("invalid_finalize_receipt");
+  }
+  return receipt;
+}
+
+export async function applyKamakuraSiteImport(prepared, origin, token, fetcher = fetch, loadAsset) {
+  const { endpoint, request } = importClient(prepared, origin, token, fetcher);
+  const { target, sourceDigest, plan, pages, cmsItems, mapping } = prepared;
   const originals = originalAssets(plan);
   async function original(digest, length) {
     if (!loadAsset) throw new Error("source_asset_directory_required");
@@ -366,9 +384,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const { values, positionals } = parseArgs({ allowPositionals: true, options: {
       sha256: { type: "string" }, origin: { type: "string" }, project: { type: "string" }, site: { type: "string" },
-      "verification-origin": { type: "string" }, "asset-dir": { type: "string" }, "embed-connections": { type: "string" }, apply: { type: "boolean" }
+      "verification-origin": { type: "string" }, "asset-dir": { type: "string" }, "embed-connections": { type: "string" }, apply: { type: "boolean" },
+      finalize: { type: "boolean" }
     } });
-    if (positionals.length !== 1 || (!values.apply && values.origin !== undefined)) throw new Error("invalid_arguments");
+    if (positionals.length !== 1 || values.apply && values.finalize
+      || !values.apply && !values.finalize && values.origin !== undefined) throw new Error("invalid_arguments");
     if ((await stat(positionals[0])).size > 128 * 1024 * 1024) throw new Error("source_export_too_large");
     const connectionsFile = values["embed-connections"];
     if (connectionsFile && (await stat(connectionsFile)).size > 4 * 1024 * 1024) throw new Error("embed_connections_too_large");
@@ -377,8 +397,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       projectId: values.project, siteId: values.site, verificationOrigin: values["verification-origin"]
     }, connections);
     const loadAsset = (digest, length) => readKamakuraImportAsset(values["asset-dir"], digest, length);
-    if (!values.apply) for (const [digest, length] of originalAssets(prepared.plan)) await loadAsset(digest, length);
-    const result = values.apply ? await applyKamakuraSiteImport(prepared, values.origin, process.env.NIHO_EDIT_TOKEN, fetch, loadAsset) : {
+    if (!values.apply && !values.finalize) for (const [digest, length] of originalAssets(prepared.plan)) await loadAsset(digest, length);
+    const result = values.apply ? await applyKamakuraSiteImport(prepared, values.origin, process.env.NIHO_EDIT_TOKEN, fetch, loadAsset)
+      : values.finalize ? await finalizeKamakuraSiteImport(prepared, values.origin, process.env.NIHO_EDIT_TOKEN) : {
       status: "verified", target: prepared.target, sourceDigest: prepared.sourceDigest, planDigest: await siteImportDigest(prepared.plan), mapping: prepared.mapping
     };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { applyKamakuraSiteImport, prepareKamakuraSiteImport } from "../scripts/import-kamakura-site.mjs";
+import { applyKamakuraSiteImport, finalizeKamakuraSiteImport, prepareKamakuraSiteImport } from "../scripts/import-kamakura-site.mjs";
 import { JSDOM } from "jsdom";
 import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
@@ -2935,4 +2935,45 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", endpoint, {
     target, sourceDigest: digest, action: "page", payload: { ...prepared.pages[0], visibility: "private" }
   }, { cli: true }), 409);
+
+  // finalize は取り込んだ公開版を次の全ページ公開の対象にするだけで、公開 manifest は切り替えない。
+  const finalized = await finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  assert.equal(finalized.publishedPages, 2);
+  assert.deepEqual(await finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch), finalized);
+  assert.equal(counts("managed_cms_releases"), 2);
+  assert.equal(counts("managed_page_publications"), 0);
+  const publicHtml = async (path) => {
+    const response = await publishedSiteRequest(new Request(`${target.verificationOrigin}/s/migration-fixture${path}`,
+      { headers: { "Cache-Control": "no-cache" } }), h.env);
+    return { status: response.status, text: await response.text() };
+  };
+  assert.equal((await publicHtml("/")).status, 404);
+  const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
+  const publishAll = async () => {
+    const pending = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.publication-changes"), 200);
+    return body(await h.send(MANAGEMENT_ORIGIN, "POST", operations + "site.publish", { expectedVersion: pending.version, scope: "all" }), 200);
+  };
+  assert.equal((await publishAll()).status, "released");
+  const home = await publicHtml("/");
+  assert.equal(home.status, 200);
+  assert.match(home.text, /Published fixture/u);
+  assert.doesNotMatch(home.text, /Current fixture/u);
+  const list = await publicHtml("/deferred");
+  assert.equal(list.status, 200);
+  assert.match(list.text, /Published post/u);
+  assert.doesNotMatch(list.text, /Draft post/u);
+  assert.equal((await publicHtml("/en")).status, 404, "a page without a published version stays unpublished");
+  assert.equal(counts("managed_page_publications"), 2);
+  const homeDraft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "pages.read/home?locale=ja"), 200);
+  assert.equal(homeDraft.document.title, "Current fixture");
+  assert.equal((await publishAll()).status, "released");
+  assert.equal(counts("managed_page_publications"), 2, "recorded versions are not recorded again");
+
+  // 以後の CMS 公開は、取り込んだ一覧ページも作り直す。
+  const current = await site.read("cms.release.current");
+  const drafts = await Promise.all(result.mapping.cmsItems.map(async ({ itemId }) =>
+    (await site.read("cms.items.read", { collectionId: "posts", itemId })).item));
+  await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.releaseId, drafts));
+  await h.cron();
+  assert.match((await publicHtml("/deferred")).text, /Draft post/u);
 });

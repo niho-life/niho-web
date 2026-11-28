@@ -143,7 +143,7 @@ export class CmsStore {
     }]));
   }
 
-  private async deliveryEvent(transaction: string, snapshot: CmsReleaseSnapshot, guard: string) {
+  async deliveryEvent(transaction: string, snapshot: CmsReleaseSnapshot, guard: string) {
     const { snapshotDigest } = await serializeCmsDeliverySnapshot(snapshot);
     return this.db.prepare(`INSERT INTO managed_cms_delivery_events
       (site_id, sequence, release_id, locale, snapshot_digest, renderer_version)

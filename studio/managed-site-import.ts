@@ -1,6 +1,7 @@
 import { assetKey, uniqueAssetReferences } from "../src/assets.js";
-import { cmsLocalizationItemKey } from "../src/cms-v2-localization.js";
+import { collectCmsLocalizationUnits, createCmsLocalizationOverlay, parseCmsLocalizationOverlay, cmsLocalizationItemKey } from "../src/cms-v2-localization.js";
 import { cmsReleaseAssetUses } from "../src/cms-v2-assets.js";
+import { planCmsRelease } from "../src/cms-v2.js";
 import { cmsArray, cmsCollection, cmsId, cmsItemKey, parseCmsValues, type CmsItemRevision } from "../src/cms-v2-schema.js";
 import { cmsPageBindingProblems, parseCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
 import { parsePageDocument, type PageDocument } from "../src/core.js";
@@ -9,7 +10,11 @@ import { MANAGED_EMBED_REF, managedBlockContracts, parseManagedPublicPolicy, reg
 import { walkNodes } from "../src/node-tree.js";
 import { validatePagePath } from "../src/pages.js";
 import { fail, identifier, keys, line, localeCode, record } from "../src/validation-utils.js";
-import { blobSize, cmsPathReserved, dateNow, itemBlobKey, localizationBlobKey, MAX_RETAINED_BYTES, migratedAssetManifestKey, type CmsState, type CmsStore } from "./managed-cms-store.js";
+import { blobSize, cmsPathReserved, dateNow, itemBlobKey, localizationBlobKey, MAX_RETAINED_BYTES, MAX_SNAPSHOT, migratedAssetManifestKey, opaque, routeTableKey, snapshotKey,
+  type CmsState, type CmsStore } from "./managed-cms-store.js";
+import { localizationReleaseContext, planCmsLocalizationRelease } from "./managed-cms.js";
+import { cmsLocalizationTargetLocale } from "./managed-cms-localization.js";
+import { releaseContext } from "./managed-cms-release.js";
 import { storePageSource } from "./managed-page-source.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
@@ -312,6 +317,108 @@ async function importCmsItem(scope: Scope, value: unknown) {
   return results[0]?.meta?.changes === 1 ? receipt : conflict();
 }
 
+type ImportedPage = { status: string; pageId: string; locale: string; version: string; publishedRevision: number | null };
+type ImportedItem = { collectionId: string; itemId: string; publishedRevision: string | null; publishedLocalizationRevision?: string | null };
+
+/**
+ * 取り込んだ公開版を、次の全ページ公開の対象にします。固定ページの公開ポインターと CMS release を一度に確定し、
+ * 公開 manifest は切り替えません。下書きは保ちます。
+ */
+async function finalizeImport(scope: Scope, verified: boolean) {
+  const { db, store, target, run, plan } = scope;
+  const stored = await db.prepare("SELECT kind, receipt_json FROM managed_site_import_resources WHERE site_id = ?1")
+    .bind(target.siteId).all<{ kind: "page" | "cms"; receipt_json: string }>();
+  if (!stored.success || !stored.results) throw new Error("migration receipt lookup failed");
+  const receipts = <T>(kind: "page" | "cms") => stored.results!.filter((row) => row.kind === kind).map((row) => JSON.parse(row.receipt_json) as T);
+  const pages = receipts<ImportedPage>("page"), items = receipts<ImportedItem>("cms");
+  if (pages.length !== plan.pages.length || pages.some(({ status }) => status !== "imported")
+    || items.length !== (plan.cms?.items.length ?? 0)) return { error: "migration_incomplete" };
+  const published = pages.filter(({ publishedRevision }) => publishedRevision !== null), pointers = JSON.stringify(published);
+  const site = plan.cms ? await store.site({ ...target, actor: { id: run.actor_subject, cli: true } }, "cms.publish") : null;
+  if (plan.cms && !site) return conflict();
+  const releasePrefix = `release_import_${run.plan_digest.slice(0, 32)}_`;
+  const pointerMatches = async (revision: string) => (await db.prepare(`SELECT count(*) AS count FROM json_each(?2) AS entry
+      JOIN managed_pages AS page ON page.site_id = ?1 AND page.page_id = json_extract(entry.value, '$.pageId')
+        AND page.locale = json_extract(entry.value, '$.locale') AND ${revision}`)
+    .bind(target.siteId, pointers).first<{ count: number }>())?.count === published.length;
+  const receipt = { status: "finalized", siteId: target.siteId, sourceDigest: run.source_digest, planDigest: run.plan_digest,
+    publishedPages: published.length };
+  if (site ? site.state.current?.id.startsWith(releasePrefix)
+    : await pointerMatches("page.published_revision = json_extract(entry.value, '$.publishedRevision')")) return receipt;
+  if (!verified) return { error: "verification_target_required" };
+  // Every imported page must still be the imported draft: a later edit means the plan no longer describes the site.
+  const unchanged = `(SELECT count(*) FROM json_each(?6) AS entry JOIN managed_pages AS page ON page.site_id = ?1
+      AND page.page_id = json_extract(entry.value, '$.pageId') AND page.locale = json_extract(entry.value, '$.locale')
+    WHERE page.current_version = json_extract(entry.value, '$.version') AND page.published_revision IS NULL) = ?7`;
+  const setPointers = (entries: "?3" | "?6", guard: string) => `UPDATE managed_pages SET published_revision = json_extract(entry.value, '$.publishedRevision')
+    FROM json_each(${entries}) AS entry WHERE managed_pages.site_id = ?1 AND managed_pages.page_id = json_extract(entry.value, '$.pageId')
+      AND managed_pages.locale = json_extract(entry.value, '$.locale') AND ${guard}`;
+  if (!site) {
+    const result = await db.prepare(setPointers("?6", `${verificationFence} AND ${runFence} AND ${unchanged}`))
+      .bind(...guardValues(scope), pointers, published.length).all();
+    if (!result.success) throw new Error("migration finalize transaction failed");
+    return result.meta?.changes === published.length ? receipt : conflict();
+  }
+  if (site.state.current || site.state.localizedReleases || await siteImportDigest(site.state.schema) !== await siteImportDigest(plan.cms!.schema)) return conflict();
+  const pins = items.flatMap(({ collectionId, itemId, publishedRevision }) =>
+    publishedRevision === null ? [] : [{ collectionId, itemId, revision: publishedRevision }]);
+  const context = await releaseContext(store, site, pins);
+  const source = planCmsRelease({ siteId: target.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
+    routeTableRevision: context.routeTable.revision, expectedReleaseId: null, items: pins, redirects: [] }, opaque(releasePrefix.slice(0, -1)), context);
+  if (source.status !== "ready") return source.status === "invalid" ? { error: "invalid_import", problems: source.problems } : conflict();
+  const targetLocale = cmsLocalizationTargetLocale(site.state.locale);
+  const sourceItems = await Promise.all(pins.map((pin) => store.item(target.siteId, site.state.locale, pin)));
+  const translated = new Map(items.map((item) => [cmsItemKey(item), item.publishedLocalizationRevision ?? null]));
+  const overlays = await Promise.all(sourceItems.map(async (item) => {
+    const units = await collectCmsLocalizationUnits(site.state.schema, item, targetLocale), revision = translated.get(cmsItemKey(item));
+    if (!revision) return createCmsLocalizationOverlay(units);
+    const blob = await store.bucket.get(localizationBlobKey(target.siteId, targetLocale, cmsLocalizationItemKey(item.collectionId, item.itemId), revision));
+    if (!blob) throw new Error("migration translation unavailable");
+    return parseCmsLocalizationOverlay(await blob.json(), units);
+  }));
+  const targetRevisions = await Promise.all(sourceItems.map(async ({ collectionId, itemId }) => ({ collectionId, itemId,
+    revision: `rev_import_${await siteImportDigest([run.plan_digest, targetLocale, collectionId, itemId])}` })));
+  const localizedContext = await localizationReleaseContext(store, site, targetLocale);
+  const localized = await planCmsLocalizationRelease({ schema: site.state.schema, sourceLocale: site.state.locale, targetLocale, sourceItems,
+    overlays, targetRevisions, redirects: [], routeTableRevision: localizedContext.routeTable.revision, expectedReleaseId: null,
+    releaseId: opaque(`${releasePrefix}${targetLocale}`), context: localizedContext,
+    publicAssets: (schema, entries) => store.publicAssets(schema, entries) });
+  if (localized.status !== "ready") return localized.status === "invalid" ? { error: "invalid_import", problems: localized.problems } : conflict();
+  const snapshots = [source.proposal.snapshot, localized.proposal.snapshot];
+  const retainedBytes = site.state.retainedBytes + localized.revisions.reduce((total, item) => total + blobSize(item), 0)
+    + snapshots.reduce((total, snapshot) => total + blobSize(snapshot) + blobSize(snapshot.routeTable), 0);
+  if (snapshots.some((snapshot) => blobSize(snapshot) > MAX_SNAPSHOT) || retainedBytes > MAX_RETAINED_BYTES) return conflict();
+  await Promise.all([
+    ...snapshots.flatMap((snapshot) => [store.put(routeTableKey(target.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable),
+      store.put(snapshotKey(target.siteId, snapshot.releaseId), snapshot)]),
+    ...localized.revisions.map((item) => store.put(itemBlobKey(target.siteId, targetLocale, item), item))
+  ]);
+  const at = dateNow(), released = source.proposal.snapshot, translatedRelease = localized.proposal.snapshot;
+  const state: CmsState = { ...site.state, retainedBytes, current: { id: released.releaseId, at }, routeTableRevision: released.routeTableRevision,
+    localizedReleases: { [targetLocale]: { id: translatedRelease.releaseId, at, routeTableRevision: translatedRelease.routeTableRevision } } };
+  const generation = opaque("tx");
+  const guard = "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?1)";
+  const results = await db.batch([
+    db.prepare(`UPDATE managed_cms_state SET generation = ?9, state_json = ?10
+      WHERE site_id = ?1 AND generation = ?8 AND ${verificationFence} AND ${runFence} AND ${unchanged}`)
+      .bind(...guardValues(scope), pointers, published.length, site.generation, generation, JSON.stringify(state)),
+    db.prepare(setPointers("?3", "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?1 AND generation = ?2)"))
+      .bind(target.siteId, generation, pointers),
+    ...localized.revisions.map((item) => db.prepare(`INSERT INTO managed_cms_revisions (site_id, revision, collection_id, item_id, locale, schema_revision)
+      SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${guard}`)
+      .bind(generation, target.siteId, item.revision, item.collectionId, item.itemId, targetLocale, item.schemaRevision)),
+    ...(await Promise.all(snapshots.map(async (snapshot) => [
+      db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${guard}`)
+        .bind(generation, target.siteId, snapshot.releaseId),
+      await store.deliveryEvent(generation, snapshot, guard)
+    ]))).flat(),
+    db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, 'cms.migration-import' WHERE ${guard}`)
+      .bind(generation, target.siteId, run.actor_subject)
+  ]);
+  if (results.some((result) => !result.success)) throw new Error("migration finalize transaction failed");
+  return results[0]?.meta?.changes === 1 ? receipt : conflict();
+}
+
 async function verifiedTarget(store: CmsStore, siteId: string, projectId: string, subject: string, previewOrigin: string | null, target: Target) {
   if (!previewOrigin || target.verificationOrigin !== previewOrigin || target.siteId !== siteId || target.projectId !== projectId) return false;
   return !!await store.db.prepare(`SELECT 1 AS allowed WHERE ${verificationFence}`)
@@ -384,10 +491,14 @@ export async function managedSiteImport(store: CmsStore, siteId: string, project
     target = parseSiteImportTarget(body.target);
     if (typeof body.sourceDigest !== "string" || !SITE_IMPORT_DIGEST.test(body.sourceDigest)) return { error: "invalid_import" };
   } catch { return { error: "invalid_import" }; }
-  if (!await verifiedTarget(store, siteId, projectId, subject, previewOrigin, target)) return { error: "verification_target_required" };
+  const verified = await verifiedTarget(store, siteId, projectId, subject, previewOrigin, target);
+  // 確定後は release があるため新規取込の条件を外れる。確定の再送だけは、同じ対象なら受領内容を返す。
+  if (!verified && (body.action !== "finalize" || target.siteId !== siteId || target.projectId !== projectId
+    || target.verificationOrigin !== previewOrigin)) return { error: "verification_target_required" };
   if (body.action === "begin") return begin(db, store, target, subject, body.sourceDigest, body.payload);
-  if (body.action !== "page" && body.action !== "cms") return { error: "invalid_import" };
+  if (body.action !== "page" && body.action !== "cms" && body.action !== "finalize") return { error: "invalid_import" };
   const scope = await importScope(store, target, subject, body.sourceDigest);
+  if (body.action === "finalize") return scope ? finalizeImport(scope, verified) : verified ? conflict() : { error: "verification_target_required" };
   if (!scope) return conflict();
   const { plan } = scope;
   if (plan.assets.length) {
