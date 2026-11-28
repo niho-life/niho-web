@@ -44,8 +44,29 @@ node scripts/import-kamakura-site.mjs "$EXPORT" \
 - 同じ JSON、checksum、元素材、接続ファイル、サイト、owner を指定して再実行できる。確定した版を再作成せず、途中までの取込から続ける。異なるエクスポート、同じ path の別ページ、取込後に編集された取込対象は競合として停止する。
 - 結果に元 URL → ページ ID と版、元素材 ID → 安定参照、元 CMS collection/item ID → 対象 ID と版を出す。検証予定の公開版と現行下書きのみを保持し、旧公開履歴を取り込まない。
 - Studio のエディターで現行下書きを読み、版レコードから移行元の公開版と現行下書きを照合する。エディターと `niho-edit --studio assets-resolve` は対象サイト内の移行素材だけを解決する。公開用の素材解決は現行の公開原本 URL を使用し、原本バイトは SHA-256 ごとに非公開 R2 に保持する。
-- 固定ページの公開ポインター、CMS release、CMS 公開予約、host と DNS は取込前の状態を保つ。検証ホストでの全体公開、公開ページとの比較、配信先の切替、非公開原本からの公開配信への切替は後続作業で行う。
+- 取込（`--apply`）は固定ページの公開ポインター、CMS release、CMS 公開予約、host と DNS を取込前の状態に保つ。公開版の確定と全体公開は次の手順で行う。公開ページとの比較、配信先の切替、非公開原本からの公開配信への切替は後続作業で行う。
+
+## 公開版を確定する
+
+全件を取り込んだら、同じ指定で `--apply` を `--finalize` に替えて実行します。
+
+```sh
+node scripts/import-kamakura-site.mjs "$EXPORT" \
+  --sha256 "$EXPORT_SHA256" --asset-dir "$ASSET_DIR" \
+  --project "$PROJECT_ID" --site "$SITE_ID" --verification-origin "$VERIFICATION_ORIGIN" \
+  --finalize --origin "$STUDIO_ORIGIN" > "$FINALIZE_RESULT"
+```
+
+取り込んだ公開版の CMS release（原文と翻訳）と固定ページの公開ポインターを一度に確定します。公開は切り替えず、下書きは保ちます。確認済みでない翻訳は、通常の翻訳公開と同じく翻訳先の release から除きます。取込が途中の場合、保留ページがある場合、取込後に編集した取込対象ページがある場合は確定しません。確定した後は取込を追加できません。同じ指定で `--finalize` を再実行すると、同じ結果を返します。
+
+## 検証 host で全量を公開する
+
+1. 最初の公開より前に、対象サイトの SEO 設定を `robotsPolicy: "noindex"` にします（`site-seo-read` で読み、`site-seo-save` で保存）。主 host の `/s/{slug}` は検索対象として登録されるため、設定しないまま公開すると移行元と同じ内容が検索に載ります。公開済みのサイトでは `publish --changed` で設定を反映してから確かめます。
+2. `niho-edit --studio ... publish --all` を実行し、`elapsedMs` と `urls` の件数を記録します。
+3. 主 host と検証 host の両方で、公開ページが `X-Robots-Tag: noindex, nofollow` を返すことを確かめます。
+
+切り替えるときは `robotsPolicy` を `index` に戻して再公開します。
 
 ## Studio API
 
-`POST /api/edit/v2/sites/{siteId}/operations/site.migration-import` は `{ target: { projectId, siteId, verificationOrigin }, sourceDigest, action, payload }` を受け取る。`begin` は取込計画、`page` と `cms` は計画の digest と一致する各項目を受け付ける。CMS ページでは `publishedCmsBindings?` と `draftCmsBindings?` を各文書版に対応させ、target scope と取り込み済み schema でサーバー側検証する。`PUT /api/edit/v2/sites/{siteId}/operations/site.migration-import/{assetSha256}` は同じ owner の短期 token と `X-Import-Project`, `X-Import-Verification-Origin`, `X-Import-Source-Digest` の各ヘッダーを照合し、`application/octet-stream` の原本バイトを受け付ける。検証先の照合に失敗した場合は403、取込計画・対象版・既存の経路が衝突した場合は409、入力形式・checksum・サイズが要件を満たさない場合は400を返す。ページ本文は既存の版付き R2、CMS bindings は対応版の D1 sidecar、CMS 項目・翻訳は既存の R2 に保存し、現在の版と取込受領記録を D1 のトランザクションで確定する。
+`POST /api/edit/v2/sites/{siteId}/operations/site.migration-import` は `{ target: { projectId, siteId, verificationOrigin }, sourceDigest, action, payload }` を受け取る。`begin` は取込計画、`page` と `cms` は計画の digest と一致する各項目を受け付ける。`finalize` は空の payload を受け付け、全項目の取込を確かめて公開版を確定し、`{ status: "finalized", siteId, sourceDigest, planDigest, publishedPages }` を返す。取込が揃っていなければ 409 `migration_incomplete`。CMS ページでは `publishedCmsBindings?` と `draftCmsBindings?` を各文書版に対応させ、target scope と取り込み済み schema でサーバー側検証する。`PUT /api/edit/v2/sites/{siteId}/operations/site.migration-import/{assetSha256}` は同じ owner の短期 token と `X-Import-Project`, `X-Import-Verification-Origin`, `X-Import-Source-Digest` の各ヘッダーを照合し、`application/octet-stream` の原本バイトを受け付ける。検証先の照合に失敗した場合は403、取込計画・対象版・既存の経路が衝突した場合は409、入力形式・checksum・サイズが要件を満たさない場合は400を返す。ページ本文は既存の版付き R2、CMS bindings は対応版の D1 sidecar、CMS 項目・翻訳は既存の R2 に保存し、現在の版と取込受領記録を D1 のトランザクションで確定する。

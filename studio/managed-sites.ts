@@ -1074,7 +1074,7 @@ type ManagedPublicationCandidate = {
   readonly current_bindings_json: string | null;
   readonly published_document_json: string | null; readonly published_document_key: string | null; readonly published_document_digest: string | null;
   readonly published_bindings_json: string | null; readonly published_path: string | null; readonly published_at: number | null;
-  readonly published_manifest_key: string | null;
+  readonly published_manifest_key: string | null; readonly published_publication_id: string | null;
   readonly cms_release_id: string | null; readonly cms_schema_revision: string | null;
 };
 
@@ -1103,7 +1103,7 @@ async function managedPublicationSnapshot(store: CmsStore, actor: ManagedActor, 
   const pageResult = await db.prepare(`SELECT s.project_id, mp.site_id, ms.slug, ${PRIMARY_DOMAIN} AS public_domain,
       COALESCE((SELECT locale FROM managed_pages WHERE site_id = mp.site_id AND page_id = 'home' ORDER BY locale LIMIT 1), mp.locale) AS cms_locale,
       mp.page_id, mp.locale, mp.title, mp.path, mp.visibility, mp.current_version, ms.page_catalog_version,
-      mp.current_revision, mp.published_revision,
+      mp.current_revision, mp.published_revision, mp.published_publication_id,
       current_version.document_json AS current_document_json, current_version.document_key AS current_document_key,
       current_version.document_digest AS current_document_digest, current_version.bindings_json AS current_bindings_json,
       published_version.document_json AS published_document_json, published_version.document_key AS published_document_key,
@@ -1184,7 +1184,7 @@ async function historicalPublishedSource(store: CmsStore, source: PageSourceRow 
 
 function pageIsPublished(page: ManagedPublicationCandidate, publishedKeys: ReadonlySet<string>, hasManifest: boolean): boolean {
   return page.published_revision !== null && (publishedKeys.has(page.page_id + "\u0000" + page.locale)
-    || page.visibility === "public" && (!hasManifest || page.published_bindings_json !== null));
+    || page.visibility === "public" && (!hasManifest || page.published_bindings_json !== null || page.published_publication_id === null));
 }
 
 async function publishedCmsSnapshots(store: CmsStore, siteId: string) {
@@ -1246,7 +1246,9 @@ async function prepareManagedPublishedPageMutation(store: CmsStore, edition: Man
       const identity = { siteId, pageId: page.page_id, locale: page.locale };
       const bindings = pinned.bindings_json ? parseCmsPageBindings(JSON.parse(pinned.bindings_json), identity) : null;
       const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
-      const cms = bindings && releaseId ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : null;
+      const cms = !bindings ? null : releaseId ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId)
+        // 取込で確定して公開記録がまだないページは、現在の CMS release で生成する。
+        : page.published_publication_id === null ? snapshots.find(({ locale }) => locale === page.locale) : null;
       if (bindings && (!cms || cms.locale !== page.locale)) throw new Error("missing CMS release");
       if (cms) snapshotsById.set(cms.releaseId, cms);
       const original = selected && !route && page.published_manifest_key
@@ -1321,6 +1323,8 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
     for (const page of edition.pages) {
       const current = selected.has(page.page_id + "\u0000" + page.locale);
       if (!current && !pageIsPublished(page, publishedKeys, edition.manifest !== null)) continue;
+      // 取込で確定した公開版は公開記録がまだない。最初に生成するときに記録し、以後の CMS 公開の対象にする。
+      const unrecorded = !current && page.published_publication_id === null;
       const source = publicationSource(page, current);
       if (!source) continue;
       const route = current ? undefined : publicationRoute(page, edition.manifest);
@@ -1332,7 +1336,7 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
         const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
         const target = { siteId, pageId: page.page_id, locale: page.locale };
         const bindings = bindingsJson ? parseCmsPageBindings(JSON.parse(bindingsJson), target) : null;
-        const cms = bindings ? current ? cmsByLocale.get(page.locale)
+        const cms = bindings ? current || unrecorded && !releaseId ? cmsByLocale.get(page.locale)
           : releaseId ? cmsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : undefined : undefined;
         if (bindings && (!cms || cms.locale !== page.locale)) throw new Error("missing CMS release");
         if (cms) cmsById.set(cms.releaseId, cms);
@@ -1344,7 +1348,7 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
             if (page === requestedPage) { requestedDocument = document; requestedBindings = bindings; }
             return document;
           } });
-        if (!current) continue;
+        if (!current && !unrecorded) continue;
         const row: ManagedPageRow = { ...source, project_id: page.project_id, site_id: page.site_id, slug: page.slug,
           public_domain: page.public_domain, cms_locale: page.cms_locale, title: page.title, path, visibility: page.visibility,
           current_version: page.current_version, page_catalog_version: page.page_catalog_version, current_revision: page.current_revision,
@@ -1353,7 +1357,7 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
           action: "publish", auditAction: "page.published", publicationId: crypto.randomUUID(),
           cmsReleaseId: cms?.releaseId ?? null, cmsSchemaRevision: cms?.schema.schemaRevision ?? null,
           publishedPath: path, artifactKey: null, artifactDigest: null, contentSecurityPolicy: null,
-          updateCurrent: true, currentVersion: opaqueVersion() });
+          updateCurrent: current, ...(current ? { currentVersion: opaqueVersion() } : {}) });
       } catch (error) { throw new ManagedPagePublicationError(base.origin + prefix + path, { cause: error }); }
     }
     const policyMode = publishShared ? "current" : "published";
