@@ -2972,8 +2972,12 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal((await publishAll()).status, "released");
   assert.equal(counts("managed_page_publications"), 2, "recorded versions are not recorded again");
 
-  // 以後の CMS 公開は、取り込んだ CMS ページも作り直す。
+  // 確定した release は日英とも読め、以後の CMS 公開は取り込んだ CMS ページも作り直す。
+  const translated = await site.read("cms.localization.release.current");
+  assert.ok(translated.releaseId.startsWith("release_import_"));
+  assert.equal(translated.routeTableRevision, translated.snapshot.routeTable.revision);
   const current = await site.read("cms.release.current");
+  assert.equal(current.routeTableRevision, current.snapshot.routeTable.revision);
   const drafts = await Promise.all(result.mapping.cmsItems.map(async ({ itemId }) =>
     (await site.read("cms.items.read", { collectionId: "posts", itemId })).item));
   await site.read("cms.release.apply", await releasePlan(site, drafts[0].schemaRevision, current.releaseId, drafts));

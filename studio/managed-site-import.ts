@@ -394,8 +394,8 @@ async function finalizeImport(scope: Scope, verified: boolean) {
     ...localized.revisions.map((item) => store.put(itemBlobKey(target.siteId, targetLocale, item), item))
   ]);
   const at = dateNow(), released = source.proposal.snapshot, translatedRelease = localized.proposal.snapshot;
-  const state: CmsState = { ...site.state, retainedBytes, current: { id: released.releaseId, at }, routeTableRevision: released.routeTableRevision,
-    localizedReleases: { [targetLocale]: { id: translatedRelease.releaseId, at, routeTableRevision: translatedRelease.routeTableRevision } } };
+  const state: CmsState = { ...site.state, retainedBytes, current: { id: released.releaseId, at }, routeTableRevision: released.routeTable.revision,
+    localizedReleases: { [targetLocale]: { id: translatedRelease.releaseId, at, routeTableRevision: translatedRelease.routeTable.revision } } };
   const generation = opaque("tx");
   const guard = "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?1)";
   const results = await db.batch([
