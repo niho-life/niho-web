@@ -5,7 +5,7 @@ import { assetKey, collectAssetReferences, type ResolvedAsset } from "../src/ass
 import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { isSafePublicUrl } from "../src/validation-utils.js";
 import { MANAGED_EMBED_REF, managedEmbedContract, registeredNihoEmbed, type ManagedPublicPolicy } from "./managed-embed-contract.js";
-import { kamakuraImageUrl, kamakuraResponsiveImageSrcSet, kamakuraResponsiveImageUrl } from "./kamakura-public-images.js";
+import { kamakuraImageUrl, kamakuraResponsiveImageSrcSet, kamakuraResponsiveImageUrl, studioImageSrcSet } from "./kamakura-public-images.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 declare const __PUBLIC_NIHO_EMBEDS_PATH__: string;
@@ -101,7 +101,7 @@ function frameOrigin(embed: EmbedDescriptor): string | undefined {
 }
 
 export function planManagedPublicRender(document: PageDocument, policy: ManagedPublicPolicy, parentOrigin: string, embeds: readonly PublishedEmbed[],
-  assetManifest: readonly CmsPublicAsset[] = []) {
+  assetManifest: readonly CmsPublicAsset[] = [], studioImageOrigin?: string) {
   const frames = new Set<string>(), images = new Set<string>(), media = new Set<string>();
   let presentation = false, managedEmbed = false;
   let prioritizedImage = false;
@@ -170,7 +170,7 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
       const imageSource = node.asset ? (resource(assetUrl) ? assetUrl : undefined) : typeof attrs?.src === "string" ? attrs.src : undefined;
       const hints: PublicImageRenderHints = {};
       if (!attrs?.srcSet && imageSource) {
-        const candidates = kamakuraResponsiveImageSrcSet(imageSource);
+        const candidates = kamakuraResponsiveImageSrcSet(imageSource) ?? (studioImageOrigin ? studioImageSrcSet(imageSource, studioImageOrigin) : null);
         if (candidates) {
           hints.srcSet = candidates;
           hints.sizes = "100vw";

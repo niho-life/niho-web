@@ -40,6 +40,7 @@ import {
   managedProjectRegistrations, managedRegistration, publicSitesOrigin, readJson as readManagedEditorJson, type ManagedActor, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
 import { publishedSiteRequest, resolvePublishedSiteHost } from "./managed-publication.js";
+import { managedAssetsOperation } from "./managed-assets.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
 import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
 import type { CmsPublicAsset } from "../src/cms-v2.js";
@@ -81,6 +82,8 @@ export interface Env {
   readonly STUDIO_PREVIEW_UPLOAD_ORIGIN?: string;
   /** Studio-native siteをpath分離して配信する、Studio認証originとは別のHTTPS origin。 */
   readonly PUBLIC_SITES_ORIGIN?: string;
+  /** "cloudflare" のとき、Studio 画像の幅別 srcset を /cdn-cgi/image/ で作る。 */
+  readonly PUBLIC_IMAGE_RESIZING?: string;
   /** テスト用の差し替え口。実行時は Workers Cache API の default cache を使う。 */
   readonly PUBLIC_HTML_CACHE?: ManagedPublicHtmlCache;
   /** Verification host served by the read-only public worker; every response is noindex. */
@@ -171,7 +174,8 @@ function cmsPublicAssetResolver(env: Env, identity: BridgeActor): CmsPublicAsset
 
 function cmsStore(env: Env, identity: BridgeActor): CmsStore {
   if (!env.CMS_OBJECTS) throw new Error("CMS storage unavailable");
-  return new CmsStore(env.DB, env.CMS_OBJECTS, cmsPublicAssetResolver(env, identity), publicSitesOrigin(env.PUBLIC_SITES_ORIGIN) ?? undefined);
+  return new CmsStore(env.DB, env.CMS_OBJECTS, cmsPublicAssetResolver(env, identity), publicSitesOrigin(env.PUBLIC_SITES_ORIGIN) ?? undefined,
+    env.PUBLIC_IMAGE_RESIZING === "cloudflare");
 }
 const CLI_SUBJECT_PREFIX = "studio-cli:";
 type JwtHeader = { readonly alg?: unknown; readonly kid?: unknown; readonly typ?: unknown };
@@ -2838,7 +2842,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
       const managed = await managedRegistration(env.DB, projectId, siteId);
       if (managed) {
         return managedEditorOperation(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, action, origin,
-          env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined);
+          env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS, undefined, origin, env.PUBLIC_IMAGE_RESIZING === "cloudflare") : undefined);
       }
     }
   }
@@ -3009,7 +3013,7 @@ async function managedCliPublicSettings(
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.styles\.(?:read|edit|publish)|site\.publication-changes|site\.publish|site\.migration-import(?:\/[a-f0-9]{64})?|assets\.resolve))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.styles\.(?:read|edit|publish)|site\.publication-changes|site\.publish|site\.migration-import(?:\/[a-f0-9]{64})?|assets\.(?:resolve|list|upload)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -3080,6 +3084,27 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
       settings?.[1] === "redirects" ? "/editor/redirects" : "/editor/seo-settings", url.origin,
       env.CMS_OBJECTS ? cmsStore(env, bridgeIdentity) : undefined);
   }
+  if (version === "v2" && (operation === "assets.list" || operation === "assets.upload")) {
+    const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+    if (!env.CMS_OBJECTS || !origin) return json({ error: "not_found" }, 404);
+    if (request.method !== (operation === "assets.list" ? "POST" : "PUT") || url.search) return json({ error: "invalid_request" }, 400);
+    if (identity.kind === "human" && accessToken === null
+      && (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
+    // 一覧は pages.read、アップロードは pages.edit。grant の種類は増やさない。
+    const capability = operation === "assets.list" ? "pages.read" : "pages.edit";
+    let subject = actor.id;
+    if (identity.kind === "service") {
+      const grant = await env.DB.prepare(`SELECT g.delegated_by_subject ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
+        .bind(identity.clientId, registration.project_id, siteId, capability).first<{ delegated_by_subject: string }>();
+      if (!grant) return json({ error: "forbidden" }, 403);
+      subject = grant.delegated_by_subject;
+    }
+    const member = await env.DB.prepare(`SELECT 1 AS allowed FROM project_members AS member JOIN sites AS s ON s.project_id = member.project_id
+      JOIN managed_sites AS ms ON ms.site_id = s.id WHERE member.access_subject = ?1 AND member.project_id = ?2 AND s.id = ?3
+        AND member.role IN ('owner', 'editor')`).bind(subject, registration.project_id, siteId).first<{ allowed: number }>();
+    if (!member) return json({ error: "forbidden" }, 403);
+    return managedAssetsOperation(request, operation, cmsStore(env, bridgeIdentity), siteId!, origin, subject);
+  }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
   if (version === "v1" && (path === "capabilities" || operation === "assets.resolve" || operation?.startsWith("pages.") || operation?.startsWith("site.styles.") || operation?.startsWith("site.publication-") || operation === "site.publish")) {
@@ -3113,7 +3138,7 @@ async function handle(request: Request, env: Env, timing: StudioRequestTiming): 
   if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
     if (!env.CMS_OBJECTS) return json({ error: "managed_sites_unavailable" }, 503);
     const published = await publishedSiteRequest(request, {
-      DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
+      DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS, PUBLIC_SITES_ORIGIN: configuredPublicOrigin,
       ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
       ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
     });

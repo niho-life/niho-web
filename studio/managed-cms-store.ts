@@ -5,6 +5,7 @@ import { collectCmsReleaseAssetReferences, parseCmsReleaseAssetManifest, parseCm
 import { parseCmsPublicAssets } from "../src/cms-v2-assets.js";
 import type { AssetReference } from "../src/types.js";
 import type { ManagedD1 } from "./managed-sites.js";
+import { MIGRATED_PROVIDER, STUDIO_UPLOAD_PROVIDER, resolveStudioAssets } from "./managed-assets.js";
 
 export type CmsBucket = {
   get(key: string): Promise<{ json<T>(): Promise<T>; text(): Promise<string>; arrayBuffer(): Promise<ArrayBuffer> } | null>;
@@ -59,7 +60,7 @@ export const MAX_BODY = 64 * 1024;
 export const MAX_RELEASE_BODY = 4 * 1024 * 1024;
 export const MAX_RETAINED_BYTES = 100 * 1024 * 1024;
 export const MAX_SNAPSHOT = 2 * 1024 * 1024;
-const MIGRATED_URL_ASSET_PROVIDER = "kamakura-source";
+const MIGRATED_URL_ASSET_PROVIDER = MIGRATED_PROVIDER;
 export const migratedAssetManifestKey = (siteId: string) => `sites/${siteId}/migration/legacy-assets.json`;
 export const opaque = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 export const nowSeconds = () => Math.floor(Date.now() / 1000);
@@ -107,34 +108,39 @@ function scopeValues(scope: CmsScope, capability: CmsCapability) {
 
 export class CmsStore {
   constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver,
-    readonly publicOrigin?: string) {}
+    readonly publicOrigin?: string, readonly publicImageResizing = false) {}
+
+  /** PUBLIC_IMAGE_RESIZING=cloudflare のときだけ、Studio 画像の srcset を作る origin。 */
+  get imageResizeOrigin(): string | undefined { return this.publicImageResizing ? this.publicOrigin : undefined; }
 
   async publicAssets(schema: CmsSchema, items: readonly CmsItemRevision[]) {
     const references = collectCmsReleaseAssetReferences(schema, items);
     if (!references.length) return [];
-    const external = references.filter(({ provider }) => provider === MIGRATED_URL_ASSET_PROVIDER);
-    const ordinary = references.filter(({ provider }) => provider !== MIGRATED_URL_ASSET_PROVIDER);
+    const isMigrated = ({ provider }: AssetReference) => provider === MIGRATED_URL_ASSET_PROVIDER || provider === STUDIO_UPLOAD_PROVIDER;
+    const external = references.filter(isMigrated);
+    const ordinary = references.filter((reference) => !isMigrated(reference));
     const resolved = ordinary.length && this.resolvePublicAssets
       ? await this.resolvePublicAssets({ siteId: schema.siteId, references: ordinary }) : [];
     return [...resolved, ...await this.migratedPublicAssets(schema.siteId, external)];
   }
 
   async migratedPublicAssets(siteId: string, references: readonly AssetReference[]): Promise<CmsPublicAsset[]> {
+    const uploaded = await resolveStudioAssets(this.db, siteId, references.filter(({ provider }) => provider === STUDIO_UPLOAD_PROVIDER), this.publicOrigin);
     const migrated = references.filter(({ provider }) => provider === MIGRATED_URL_ASSET_PROVIDER);
-    if (!migrated.length) return [];
+    if (!migrated.length) return uploaded;
     // Migration manifests live in the same private bucket as immutable CMS revisions.
     // Only stable references in the explicitly migrated provider can select these URLs.
     const object = await this.bucket.get(migratedAssetManifestKey(siteId));
-    if (!object) return [];
+    if (!object) return uploaded;
     const manifest = await object.json<unknown>();
     if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)
       || (manifest as any).formatVersion !== 1 || (manifest as any).siteId !== siteId
-      || !Array.isArray((manifest as any).assets)) return [];
+      || !Array.isArray((manifest as any).assets)) return uploaded;
     const assets = parseCmsPublicAssets((manifest as any).assets);
-    return migrated.flatMap((reference) => {
+    return [...uploaded, ...migrated.flatMap((reference) => {
       const asset = assets.get(assetKey(reference));
       return asset ? [asset] : [];
-    });
+    })];
   }
 
   async resolveMigratedAssets(siteId: string, references: readonly AssetReference[]): Promise<ResolvedAssetMap> {

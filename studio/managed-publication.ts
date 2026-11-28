@@ -1,4 +1,5 @@
 import type { ManagedD1, ManagedPublicHtmlCache } from "./managed-sites.js";
+import { servePublicStudioAsset } from "./managed-assets.js";
 import { MANAGED_EMBED_REF, parseManagedPublicPolicy, type ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { MAX_MANAGED_SITE_REDIRECTS, parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 
@@ -495,6 +496,7 @@ type PublicEnv = {
   readonly DB: PublicDatabase;
   readonly CMS_OBJECTS: PublishedSiteReadObjectStore;
   readonly ASSETS?: { fetch(request: Request): Promise<Response> };
+  readonly PUBLIC_SITES_ORIGIN?: string;
   readonly PUBLIC_SITES_PREVIEW_ORIGIN?: string;
   readonly PUBLIC_HTML_CACHE?: ManagedPublicHtmlCache;
 };
@@ -770,6 +772,10 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv, con
       headers.set("Cache-Control", "public, max-age=31536000, immutable");
       return new Response(request.method === "HEAD" ? null : asset.body, { status: asset.status, headers });
     } catch { return unavailable(true); }
+  }
+  if (env.PUBLIC_SITES_ORIGIN && url.origin === env.PUBLIC_SITES_ORIGIN) {
+    const asset = await servePublicStudioAsset(request, url, env);
+    if (asset) return asset;
   }
   const lookups = publicationLookups(env.DB);
   let hosts: readonly HostRow[] = [];

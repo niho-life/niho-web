@@ -164,9 +164,11 @@ export async function renderManagedPage(input: {
   readonly replacedPages?: readonly Pick<ManagedPageAlternate, "pageId" | "locale">[];
   /** CMS 詳細で項目が決まっているとき true。Article の構造化データに項目の値を使う。 */
   readonly cmsDetailItem?: boolean;
+  /** PUBLIC_IMAGE_RESIZING=cloudflare のときの Studio 画像 origin。無ければ srcset を作らない。 */
+  readonly imageResizeOrigin?: string | undefined;
 }) {
   const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds, forceNoindex } = input;
-  const plan = planManagedPublicRender(prefixedDocument(document, prefix, input.siteStyles), policy, origin, embeds, input.assets);
+  const plan = planManagedPublicRender(prefixedDocument(document, prefix, input.siteStyles), policy, origin, embeds, input.assets, input.imageResizeOrigin);
   const rendered = plan.document;
   // Validate the document path before projecting canonical and OpenGraph URLs onto the shared prefix.
   const resolved = resolvePageMetadata({ document: rendered, domain: origin, path, visibility: "public", assets: plan.assets });
@@ -337,7 +339,7 @@ export async function prepareManagedPagePublicationBatch(input: {
           for (const asset of snapshot?.assetManifest ?? []) assets.set(assetKey(asset.reference), asset);
           const canonicalPath = /[A-Z]/u.test(path) ? path.toLowerCase() : path;
           const rendered = await renderManagedPage({ db: store.db, store, document: framed, policy, origin, prefix: publicPrefix,
-            path: canonicalPath, alternatePath: path, publicPath, siteName, embeds, assets: [...assets.values()],
+            path: canonicalPath, alternatePath: path, publicPath, siteName, embeds, assets: [...assets.values()], imageResizeOrigin: store.imageResizeOrigin,
             siteStyles, alternatePages, replacedPages: input.replacePages, ...(bindings?.detail ? { cmsDetailItem: true } : {}) });
           const previousPath = target.previousPath === undefined ? path : target.previousPath + path.slice(target.path.length);
           const previousRoute = manifest?.routes.find((route) => route.pageId === target.pageId && route.locale === target.locale

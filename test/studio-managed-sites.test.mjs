@@ -3808,3 +3808,162 @@ testWithD1("CMS detail head, canonical and Article JSON-LD follow each item thro
   assert.equal(beta.article.url, beta.canonical);
   assert.equal("datePublished" in alpha.article, false, "the release record has no per-item dates");
 });
+
+function pngBytes(width, height) {
+  const bytes = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(bytes);
+  bytes.write("IHDR", 12);
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  bytes.set([8, 6, 0, 0, 0], 24);
+  return bytes;
+}
+
+function assetUploader(h) {
+  return (siteId, bytes, { type = "image/png", name = "sea.png", length = String(bytes.length), token = h.ownerToken, service = false } = {}) => {
+    const headers = { "Cf-Access-Jwt-Assertion": token, "Content-Type": type, "X-Asset-Name": encodeURIComponent(name),
+      ...(service ? {} : { Origin: MANAGEMENT_ORIGIN, "Sec-Fetch-Site": "same-origin" }), ...(length === null ? {} : { "Content-Length": length }) };
+    return h.fetch(`${MANAGEMENT_ORIGIN}/api/edit/v2/sites/${siteId}/operations/assets.upload`, { method: "PUT", headers, body: bytes });
+  };
+}
+
+testWithD1("Studio image library uploads, publishes pages and CMS images, and delivers the bytes", async (t) => {
+  const h = await fixture(t, { cms: true });
+  h.env.PUBLIC_IMAGE_RESIZING = "cloudflare";
+  const site = await cmsSite(h, "image-library"), { siteId } = site, base = `/api/edit/v1/sites/${siteId}`;
+  const upload = assetUploader(h);
+  const bytes = pngBytes(640, 480);
+  const uploaded = await body(await upload(siteId, bytes), 200);
+  assert.equal(uploaded.status, "uploaded");
+  const { asset } = uploaded;
+  assert.equal(asset.provider, "studio-upload");
+  assert.match(asset.id, /^img_[a-z0-9]{24}$/u);
+  assert.equal(asset.mimeType, "image/png");
+  assert.equal(asset.bytes, bytes.length);
+  assert.deepEqual([asset.width, asset.height], [640, 480]);
+  const url = `${PUBLIC_ORIGIN}/_niho/assets/${asset.id}.png`;
+  assert.equal(asset.thumbnailUrl, url);
+  assert.equal(h.objects.has(`sites/${siteId}/assets/${createHash("sha256").update(bytes).digest("hex")}`), true);
+  assert.equal((await body(await upload(siteId, bytes, { name: "again.png" }), 200)).asset.id, asset.id, "the same bytes return the same asset");
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_site_assets WHERE site_id = ?").get(siteId).count, 1);
+
+  const list = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v2/sites/${siteId}/operations/assets.list`, { provider: "studio-upload" }), 200);
+  assert.deepEqual(list.assets.map(({ id }) => id), [asset.id]);
+  assert.equal(list.upload.maxBytes, 20 * 1024 * 1024);
+  assert.ok(list.upload.accept.includes("image/avif") && !list.upload.accept.includes("image/svg+xml"));
+  const reference = { provider: "studio-upload", id: asset.id };
+  const resolved = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/assets.resolve`, { references: [reference] }), 200);
+  assert.deepEqual(resolved.assets[`studio-upload:${asset.id}`], { src: url, width: 640, height: 480 });
+
+  // Delivery: immutable bytes with nosniff; unknown ids, wrong extensions and other hosts are not served.
+  const delivered = await h.send(PUBLIC_ORIGIN, "GET", `/_niho/assets/${asset.id}.png`, undefined, { auth: false });
+  assert.equal(delivered.status, 200);
+  assert.equal(delivered.headers.get("Content-Type"), "image/png");
+  assert.equal(delivered.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+  assert.equal(delivered.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.deepEqual(Buffer.from(await delivered.arrayBuffer()), bytes);
+  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", `/_niho/assets/${asset.id}.jpg`, undefined, { auth: false })).status, 404);
+  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", `/_niho/assets/img_${"z".repeat(24)}.png`, undefined, { auth: false })).status, 404);
+  assert.notEqual((await h.send("https://preview.sites.example", "GET", `/_niho/assets/${asset.id}.png`, undefined, { auth: false })).status, 200);
+
+  // Page: the uploaded asset is an img asset; the published HTML uses the absolute URL and width candidates.
+  const first = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.read/home?locale=ja`), 200);
+  const edited = structuredClone(first.document);
+  edited.body.push({ type: "element", id: "library-image", tag: "img", asset: reference, attrs: { alt: "Library image" }, children: [] });
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${base}/operations/pages.save/home?locale=ja`, { expectedVersion: first.version, document: edited }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { expectedVersion: saved.version, action: "publish" }), 200);
+  const page = await h.send(PUBLIC_ORIGIN, "GET", "/s/image-library/", undefined, { auth: false, headers: { "Cache-Control": "no-cache" } });
+  assert.equal(page.status, 200);
+  const pageHtml = await page.text();
+  const image = new JSDOM(pageHtml).window.document.querySelector('[data-nw-node="library-image"]');
+  assert.equal(image.getAttribute("src"), url);
+  assert.equal(image.getAttribute("srcset"), [320, 640, 960, 1280, 1920, 2560]
+    .map((width) => `${PUBLIC_ORIGIN}/cdn-cgi/image/width=${width},format=auto/_niho/assets/${asset.id}.png ${width}w`).join(", "));
+  assert.match(page.headers.get("Content-Security-Policy"), /img-src[^;]*'self'/u);
+
+  // CMS: the uploaded asset is an image field value and a gallery entry.
+  const schema = await site.read("cms.schema.read"), current = await site.read("cms.release.current"), collection = schema.collections[0];
+  const cover = { fieldId: "cover", key: "cover", label: "表紙", type: "image", placement: "main" };
+  const gallery = { fieldId: "gallery", key: "gallery", label: "ギャラリー", type: "gallery", captionLabel: "説明", placement: "main" };
+  const migration = await site.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], replacements: [],
+    nextSchema: { ...schema, collections: [{ ...collection, fields: [...collection.fields, cover, gallery] }] } });
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: migration.plan.operationId, confirmationToken: migration.plan.confirmationToken });
+  const draft = await createDraft(site, schemaRevision);
+  const item = (await site.read("cms.items.save", { ...versioned(draft),
+    values: { ...values("Library post"), cover: reference, gallery: [{ id: "one", image: reference, caption: "Sea" }] } }, { headers: headers() })).item;
+  await site.read("cms.release.apply", await releasePlan(site, schemaRevision, null, [item]));
+  await h.cron();
+  const cmsResponse = await site.pub("/posts/notice");
+  assert.equal(cmsResponse.status, 200);
+  const cmsHtml = await cmsResponse.text();
+  assert.match(cmsHtml, new RegExp(`<img src="${url.replaceAll(".", "\\.")}" alt="" width="640" height="480">`, "u"));
+  assert.equal((cmsHtml.match(new RegExp(url.replaceAll(".", "\\."), "gu")) ?? []).length, 2);
+  assert.match(cmsResponse.headers.get("Content-Security-Policy"), /img-src 'self'/u, "the shared origin serves the image, so 'self' covers it");
+});
+
+testWithD1("Studio image srcset is off unless resizing is enabled and keeps animated GIFs whole", () => {
+  const origin = "https://sites.example", id = `img_${"a".repeat(24)}`, reference = { provider: "studio-upload", id };
+  const render = (extension, resizeOrigin) => {
+    const document = { schemaVersion: 1, siteId: "s", pageId: "home", locale: "ja", revision: 1, title: "T", tokens: {},
+      body: [{ type: "element", id: "img", tag: "img", asset: reference, attrs: { alt: "A" }, children: [] }] };
+    return planManagedPublicRender(document, emptyManagedPublicPolicy(), origin, [],
+      [{ reference, url: `${origin}/_niho/assets/${id}.${extension}`, width: 10, height: 10, altText: "" }], resizeOrigin).imageHints.img;
+  };
+  assert.equal(render("png", undefined).srcSet, undefined);
+  assert.match(render("webp", origin).srcSet, new RegExp(`^${origin}/cdn-cgi/image/width=320,format=auto/_niho/assets/${id}\\.webp 320w, `, "u"));
+  assert.equal(render("gif", origin).srcSet, undefined);
+  assert.equal(render("png", "https://other.example").srcSet, undefined);
+});
+
+testWithD1("Studio image library rejects bad uploads, other scopes and missing rights without writing anything", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "image-rejects"), { siteId } = site;
+  const upload = assetUploader(h);
+  const count = () => h.sqlite.prepare("SELECT count(*) AS count FROM managed_site_assets").get().count;
+  const objectsBefore = h.objects.size;
+  const rejected = async (response, status, reason) => assert.deepEqual(await body(response, status), { status: "rejected", reason });
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0]);
+  await rejected(await upload(siteId, jpeg, { type: "image/png" }), 400, "type");
+  await rejected(await upload(siteId, pngBytes(1, 1), { type: "image/gif" }), 400, "type");
+  await rejected(await upload(siteId, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), { type: "image/svg+xml" }), 400, "type");
+  await rejected(await upload(siteId, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), { type: "image/png" }), 400, "type");
+  await rejected(await upload(siteId, pngBytes(1, 1), { length: null }), 400, "invalid");
+  await rejected(await upload(siteId, pngBytes(1, 1), { name: "bad\u0001name.png" }), 400, "invalid");
+  await rejected(await upload(siteId, pngBytes(1, 1), { length: String(20 * 1024 * 1024 + 1) }), 413, "size");
+  await rejected(await upload(siteId, Buffer.concat([pngBytes(1, 1), Buffer.alloc(10)]), { length: "34" }), 413, "size");
+  assert.equal(count(), 0);
+  assert.equal(h.objects.size, objectsBefore);
+
+  // Another project's owner cannot read, upload or resolve this site's assets.
+  const other = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Other", slug: "image-other", locale: "ja" }, { token: h.otherToken }), 201);
+  assert.equal((await upload(siteId, pngBytes(1, 1), { token: h.otherToken })).status, 403);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v2/sites/${siteId}/operations/assets.list`, {}, { token: h.otherToken })).status, 403);
+  assert.equal(count(), 0);
+
+  // A service grant with only pages.read can list but not upload.
+  h.sqlite.prepare("INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject) VALUES (?, ?, ?, 'pages.read', ?)")
+    .run(SERVICE_CLIENT, site.projectId, siteId, OWNER);
+  const service = { token: h.serviceToken, service: true };
+  assert.equal((await upload(siteId, pngBytes(1, 1), service)).status, 403);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v2/sites/${siteId}/operations/assets.list`, {}, { cli: true, service: true, token: h.serviceToken })).status, 200);
+  assert.equal(count(), 0);
+  h.sqlite.prepare("INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject) VALUES (?, ?, ?, 'pages.edit', ?)")
+    .run(SERVICE_CLIENT, site.projectId, siteId, OWNER);
+  assert.equal((await body(await upload(siteId, pngBytes(2, 2), service), 200)).status, "uploaded");
+
+  // An asset id from another site never resolves, in the editor or in a published page.
+  const foreign = (await body(await upload(other.siteId, pngBytes(3, 3), { token: h.otherToken }), 200)).asset;
+  const reference = { provider: "studio-upload", id: foreign.id };
+  const resolved = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v1/sites/${siteId}/operations/assets.resolve`, { references: [reference] }), 200);
+  assert.deepEqual(resolved.assets, {});
+  const base = `/api/edit/v1/sites/${siteId}`;
+  const first = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.read/home?locale=ja`), 200);
+  const edited = structuredClone(first.document);
+  edited.body.push({ type: "element", id: "foreign-image", tag: "img", asset: reference, attrs: { alt: "Foreign" }, children: [] });
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${base}/operations/pages.save/home?locale=ja`, { expectedVersion: first.version, document: edited }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { expectedVersion: saved.version, action: "publish" }), 200);
+  const page = await h.send(PUBLIC_ORIGIN, "GET", "/s/image-rejects/", undefined, { auth: false, headers: { "Cache-Control": "no-cache" } });
+  assert.equal(page.status, 200);
+  assert.doesNotMatch(await page.text(), new RegExp(`${foreign.id}|/_niho/assets/`, "u"));
+});
