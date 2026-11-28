@@ -10,9 +10,14 @@ import { parsePageDocument } from "../dist/document.js";
 import { MANAGED_EMBED_REF, managedBlockContracts } from "../dist/managed-embed-block.js";
 import { buildSiteImportCmsLocalization, importPageUrl, importPublicAssetUrl, parseSiteImportPlan, parseSiteImportTarget, resolveSiteImportSourceVersion, SITE_IMPORT_ASSET_PROVIDER, SITE_IMPORT_DIGEST, SITE_IMPORT_MAX_BYTES, siteImportDigest, siteImportResourceId } from "../dist/managed-site-import.js";
 import { walkNodes } from "../dist/node-tree.js";
+import { editDocumentById } from "@niho/web/editor-model";
+import { decodeNormalizationOperations, planNormalization, verifyNormalization } from "@niho/web/normalize";
 import { validatePagePath } from "../dist/pages.js";
 import { fail, identifier, isSafeHttpsOrigin, keys, line, localeCode, parseAssetReference, record } from "../dist/validation-utils.js";
 import { migrateKamakuraBlocks } from "./migrate-kamakura-blocks.mjs";
+
+const IMPORT_PAGE_DOCUMENT_MAX_BYTES = 200 * 1024;
+const IMPORT_PAGE_DOCUMENT_HARD_MAX_BYTES = 2 * 1024 * 1024;
 
 function sourceAssetUrl(raw, sourceOrigin) {
   return typeof raw === "string" && raw.startsWith("/") && !raw.startsWith("//") ? new URL(raw, sourceOrigin).href : raw;
@@ -89,6 +94,27 @@ function mapCmsValues(raw, collection, bySource, byUrl, byItem, path, sourceOrig
     });
   }
   return parseCmsValues(values, collection, path);
+}
+
+function normalizeImportedPage(document, path) {
+  const beforeBytes = Buffer.byteLength(JSON.stringify(document));
+  if (beforeBytes > IMPORT_PAGE_DOCUMENT_HARD_MAX_BYTES) fail(path, "page document exceeds hard size limit");
+  const input = { documents: [document], blocks: managedBlockContracts };
+  let normalized = document, operations;
+  try {
+    const plan = planNormalization(input);
+    operations = plan.proposals.flatMap((proposal) => "operations" in proposal && proposal.classification === "lossless"
+      ? decodeNormalizationOperations(proposal.operations) : []);
+    normalized = operations.reduce((current, operation) => editDocumentById(current, operation, managedBlockContracts, [], undefined, undefined, false), document);
+  } catch {
+    fail(path, "lossless page normalization failed");
+  }
+  if (verifyNormalization(input, [normalized]).status !== "equivalent") fail(path, "lossless page normalization could not be verified");
+  const afterBytes = Buffer.byteLength(JSON.stringify(normalized));
+  if (afterBytes > IMPORT_PAGE_DOCUMENT_MAX_BYTES) {
+    fail(path, `page document exceeds 200 KiB after lossless normalization (${afterBytes} bytes)`);
+  }
+  return { document: normalized, documentBytes: { before: beforeBytes, after: afterBytes, losslessOperations: operations.length } };
 }
 
 export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetValue, embedConnections = []) {
@@ -214,8 +240,8 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
         ready = parsePageDocument({ ...source.resolved, ...scope }, managedBlockContracts);
       }
       const mapped = mapPage(ready, bySource, byUrl, publicAssetUrls, paths, input.origin);
-      if (Buffer.byteLength(JSON.stringify(mapped)) > 2 * 1024 * 1024) fail(at, "page document exceeds size limit");
-      return { document: mapped, ...(cmsBindings ? { cmsBindings } : {}) };
+      const normalized = normalizeImportedPage(mapped, at);
+      return { ...normalized, ...(cmsBindings ? { cmsBindings } : {}) };
     }
     const published = publicSource === null ? null : convert(publicSource, firstRevision, "published");
     const draft = convert(draftSource, firstRevision + Number(published !== null), "draft");
@@ -230,7 +256,8 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
       ...(published?.cmsBindings ? { publishedCmsBindings: published.cmsBindings } : {}),
       ...(draft.cmsBindings ? { draftCmsBindings: draft.cmsBindings } : {}),
       ...(pageConnections.length ? { connections: pageConnections } : {}) });
-    pageMap.push({ sourceUrl: page.sourceUrl, pageId, locale: page.locale, path: page.path });
+    pageMap.push({ sourceUrl: page.sourceUrl, pageId, locale: page.locale, path: page.path,
+      documentBytes: { published: published?.documentBytes ?? null, draft: draft.documentBytes } });
   }
   const plan = parseSiteImportPlan({ sourceOrigin: input.origin, sourceSiteId: sourceId, locale, assets, assetVariants,
     pages: await Promise.all(pages.map(async (page) => ({ sourceUrl: page.sourceUrl, digest: await siteImportDigest(page) }))),
