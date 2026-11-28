@@ -7,7 +7,7 @@ import {
   cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem, collectCmsLocalizationUnits,
   discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsReleaseAssetManifest, parseCmsSchema,
   parseCmsRouteTable, parseCmsSchemaPlanInput, planCmsMigrationWithRouteTables, planCmsRelease, planCmsRouteTable,
-  planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease,
+  planCmsSchedule, removeCmsItem, parseCmsPageBindings, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease,
 } from "@niho/web/cms-v2";
 import { assetKey } from "@niho/web/assets";
 import { parsePageDocument } from "@niho/web/core";
@@ -91,6 +91,33 @@ test("CMS page projection filters single selects and resolves only approved asse
   const invalid = structuredClone(bindings);
   invalid.lists[0].fields[0].fieldId = "field-missing";
   assert.throws(() => resolveCmsPageBindings(page, invalid, { schema: model, items: [article] }), /フィールド/u);
+});
+
+test("CMS list filters accept includes for references and multiple selects and reject other forms", () => {
+  const model = schema(), pageId = "articles";
+  const item = (id, values) => parseCmsItemRevision({ ...post, itemId: id, siteId, schemaRevision: model.schemaRevision, revision: "rev-" + id,
+    values: { "field-title": id, "field-slug": id, ...values } }, model);
+  const items = [item("a", { "field-category": ["tag-1"], "field-days": ["mon", "sat"] }), item("b", { "field-category": ["tag-2"], "field-days": ["sat"] }),
+    item("c", { "field-category": [], "field-days": ["mon"] })];
+  const page = parsePageDocument({ schemaVersion: 1, siteId, pageId, locale, revision: 1, title: "Stories", tokens: {}, body: [
+    { type: "element", tag: "article", id: "story", children: [{ type: "element", tag: "a", id: "story-link", attrs: { href: "/" }, children: [{ type: "text", text: "Title" }] }] }
+  ] });
+  const bind = (filter) => ({ schemaVersion: 1, siteId, pageId, locale, lists: [{ templateNodeId: "story", collectionId: "posts", limit: 10,
+    ...(filter ? { filter } : {}), fields: [{ nodeId: "story-link", target: "text", fieldId: "field-title" }] }] });
+  const titles = (filter) => resolveCmsPageBindings(page, bind(filter), { schema: model, items }).body.map((node) => node.children[0].children[0].text);
+  assert.deepEqual(titles({ fieldId: "field-days", includes: "sat" }), ["a", "b"]);
+  assert.deepEqual(titles({ fieldId: "field-days", includes: "mon" }), ["a", "c"]);
+  assert.deepEqual(titles({ fieldId: "field-category", includes: "tag-2" }), ["b"]);
+  assert.deepEqual(titles({ fieldId: "field-category", includes: "missing-tag" }), []);
+  assert.throws(() => titles({ fieldId: "field-days", equals: "sat" }), /絞り込みに使えません/u, "equals still rejects multiple selects");
+  assert.deepEqual(titles({ fieldId: "field-kind", equals: "news" }), []);
+  assert.equal(parseCmsPageBindings(bind({ fieldId: "field-days", includes: "sat" }), { siteId, pageId, locale }).lists[0].filter.includes, "sat");
+  for (const filter of [{ fieldId: "field-days" }, { fieldId: "field-days", equals: "sat", includes: "sat" }, { fieldId: "field-days", includes: 1 }]) {
+    assert.throws(() => parseCmsPageBindings(bind(filter), { siteId, pageId, locale }), /filter|string/u);
+  }
+  assert.throws(() => resolveCmsPageBindings(page, bind({ fieldId: "field-title", includes: "a" }), { schema: model, items }), /includes/u);
+  assert.throws(() => resolveCmsPageBindings(page, bind({ fieldId: "field-kind", includes: "news" }), { schema: model, items }), /includes/u);
+  assert.throws(() => resolveCmsPageBindings(page, bind({ fieldId: "field-days", includes: "fri" }), { schema: model, items }), /選択肢/u);
 });
 
 class MemoryHost {

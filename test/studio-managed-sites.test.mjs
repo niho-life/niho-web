@@ -3122,6 +3122,51 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal((await publicHtml("/deferred/draft-related")).status, 200);
 });
 
+testWithD1("Studio CMS list filtered by a multiple reference shows only matching items and picks up newly published ones", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "tag-filter");
+  const editor = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, `/api/edit/v1/sites/${site.siteId}/operations/` + path, input);
+  const browser = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, editor + path, input);
+  const lookup = (path) => h.fetch(`${PUBLIC_ORIGIN}/s/tag-filter${path}`, { headers: { "Cache-Control": "no-cache" } });
+  const publishChanged = async () => body(await admin("POST", "site.publish", { expectedVersion: (await body(await admin("GET", "site.publication-changes"), 200)).version, scope: "changed" }), 200);
+  const initial = await site.read("cms.schema.read");
+  const { routeTableRevision } = await site.read("cms.release.current");
+  const nextSchema = structuredClone(initial);
+  nextSchema.collections[0].fields.push({ fieldId: "topics", key: "topics", type: "reference", multiple: true, collectionId: "posts", label: "Topics", placement: "side" });
+  const schemaPlan = (await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema, replacements: [] })).plan;
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: schemaPlan.operationId, confirmationToken: schemaPlan.confirmationToken });
+  const create = async (title, slug, topics = []) => {
+    const draft = await createDraft(site, schemaRevision);
+    return (await site.read("cms.items.save", { ...versioned(draft), values: { ...values(title, slug), topics } }, { headers: headers() })).item;
+  };
+  const tagA = await create("Tag A", "tag-a"), tagB = await create("Tag B", "tag-b");
+  const one = await create("Only A", "only-a", [tagA.itemId]), two = await create("Only B", "only-b", [tagB.itemId]), both = await create("A and B", "a-and-b", [tagB.itemId, tagA.itemId]);
+  const all = [tagA, tagB, one, two, both];
+  await site.read("cms.release.apply", await releasePlan(site, schemaRevision, null, all));
+  await h.cron();
+  const element = (id, tag, children) => ({ type: "element", id, tag, children });
+  const home = await body(await browser("GET", "/home"), 200);
+  const cmsBindings = { schemaVersion: 1, siteId: site.siteId, pageId: "home", locale: "ja", lists: [{ templateNodeId: "post-item", collectionId: "posts", limit: 25,
+    filter: { fieldId: "topics", includes: tagA.itemId }, fields: [{ nodeId: "post-title", fieldId: "title", target: "text" }] }] };
+  const document = { ...home.document, body: [element("post-item", "article", [element("post-title", "h2", [{ type: "text", text: "Placeholder" }])])] };
+  const invalid = structuredClone(cmsBindings);
+  invalid.lists[0].filter = { fieldId: "title", includes: tagA.itemId };
+  assert.equal((await browser("PUT", "/home/draft", { expectedVersion: home.version, cmsBindings: invalid, document })).status, 422);
+  await body(await browser("PUT", "/home/draft", { expectedVersion: home.version, cmsBindings, document }), 200);
+  assert.equal((await publishChanged()).status, "released");
+  const titles = async () => [...(await (await lookup("/")).text()).matchAll(/<h2[^>]*>([^<]*)<\/h2>/gu)].map((match) => match[1]).sort();
+  assert.deepEqual(await titles(), ["A and B", "Only A"]);
+
+  const added = await create("Later A", "later-a", [tagA.itemId]);
+  const current = (await site.read("cms.release.current")).snapshot.releaseId;
+  await site.read("cms.release.apply", await releasePlan(site, schemaRevision, current, [...all, added]));
+  await h.cron();
+  if (!(await titles()).includes("Later A")) await publishChanged();
+  assert.deepEqual(await titles(), ["A and B", "Later A", "Only A"]);
+});
+
 /** CMS 項目を載せた一覧ページ（home）と固定ページ（notes）を公開した状態を作る。 */
 async function cmsChangedFixture(t, slug) {
   const h = await fixture(t, { cms: true });

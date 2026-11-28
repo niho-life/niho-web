@@ -115,7 +115,7 @@ locale 公開の確認・適用は `niho-edit --studio localization-release-read
 
 ## PageDocument と CMS の結び付け
 
-`CmsPageBindingsDocument` は `PageDocument` に含めず、ページごとの版付き sidecar として保存します。`schemaVersion: 1`、`siteId`、`pageId`、`locale` に加え、繰り返す list node と collection、上限25件、任意の field filter / sort、node・`fieldId`・target の対応を持てます。detail は collection の slug field を使い、ページ path に slug を足した URL で公開します。field は名前が変わらない `fieldId` で参照します。
+`CmsPageBindingsDocument` は `PageDocument` に含めず、ページごとの版付き sidecar として保存します。`schemaVersion: 1`、`siteId`、`pageId`、`locale` に加え、繰り返す list node と collection、上限25件、任意の field filter / sort、node・`fieldId`・target の対応を持てます。filter は `{ fieldId, equals }` か `{ fieldId, includes }` のどちらか一方です（両方・空は拒否）。`equals` は文字の field と単数の select の値の一致です。`includes` は参照（単数・複数）と複数選択の select で、値の配列が指定した項目 ID（select は option id）を含むと一致します。select の option id は保存時に確かめますが、参照の項目 ID の存在は確かめません。detail は collection の slug field を使い、ページ path に slug を足した URL で公開します。field は名前が変わらない `fieldId` で参照します。
 
 対応する `PageEditor` は CMS 項目テンプレートの挿入、field の結び付け、下書きデータのプレビューを行います。プレビューは actor・site・page・文書版・CMS schema revision・item revision に結び付いた5分間の一回限り token を使います。`pages.read` / `pages.inspect` は対応 host だけ `cmsBindings` を返し、`pages.apply` は `pages.cms-bindings` capability を公開する host だけ sidecar の更新を受け付けます。`niho-edit apply --cms-bindings <file|->` は JSON sidecar を追加・置換し、JSON `null` で解除します。空の `operations` と sidecar だけの更新も可能です。
 

@@ -11,11 +11,13 @@ type MappingTarget = { readonly target: "text" | "image" | "link" | "rich-text" 
   | { readonly target: "attribute"; readonly attribute: BindingAttribute }
   | { readonly target: "detail-link"; readonly path: string };
 export type CmsPageFieldBinding = { readonly nodeId: string; readonly fieldId: string } & MappingTarget;
+/** `equals` は値の一致、`includes` は参照・複数選択の値の配列が指定した ID を含むこと。どちらか一方だけを指定する。 */
+export type CmsPageListFilter = { readonly fieldId: string; readonly equals: string } | { readonly fieldId: string; readonly includes: string };
 export type CmsPageListBinding = {
   readonly templateNodeId: string;
   readonly collectionId: string;
   readonly limit: number;
-  readonly filter?: { readonly fieldId: string; readonly equals: string };
+  readonly filter?: CmsPageListFilter;
   readonly order?: { readonly fieldId: string; readonly direction: "asc" | "desc" };
   readonly fields: readonly CmsPageFieldBinding[];
 };
@@ -86,11 +88,14 @@ export function parseCmsPageBindings(input: unknown, target?: Target): CmsPageBi
       fields: fieldBindings(source.fields, at + ".fields") };
     const filter = source.filter === undefined ? undefined : record(source.filter, at + ".filter");
     const order = source.order === undefined ? undefined : record(source.order, at + ".order");
-    if (filter) keys(filter, ["fieldId", "equals"], at + ".filter");
+    if (filter) keys(filter, ["fieldId", "equals", "includes"], at + ".filter");
+    if (filter && (filter.equals === undefined) === (filter.includes === undefined)) fail(at + ".filter", "filter needs exactly one of equals or includes");
     if (order) keys(order, ["fieldId", "direction"], at + ".order");
     if (order && order.direction !== "asc" && order.direction !== "desc") fail(at + ".order.direction", "invalid CMS order direction");
     return { ...value,
-      ...(filter ? { filter: { fieldId: cmsId(filter.fieldId, at + ".filter.fieldId"), equals: string(filter.equals, at + ".filter.equals", 2048) } } : {}),
+      ...(filter ? { filter: filter.includes === undefined
+        ? { fieldId: cmsId(filter.fieldId, at + ".filter.fieldId"), equals: string(filter.equals, at + ".filter.equals", 2048) }
+        : { fieldId: cmsId(filter.fieldId, at + ".filter.fieldId"), includes: string(filter.includes, at + ".filter.includes", 2048) } } : {}),
       ...(order ? { order: { fieldId: cmsId(order.fieldId, at + ".order.fieldId"), direction: order.direction as "asc" | "desc" } } : {}) };
   });
   uniqueCmsKeys(lists.map(({ templateNodeId }) => templateNodeId), path + ".lists");
@@ -157,9 +162,12 @@ export function cmsPageBindingProblems(page: PageDocument, bindings: CmsPageBind
       const root = nodes.get(source.templateNodeId);
       if (!root || root.nested || !listTags.has(root.node.tag) || !repeatable(root.node)) problem("繰り返す要素とその内側の要素を確認してください。");
       if (source.filter) {
-        const definition = field(source.filter.fieldId);
-        if (!definition || !(fieldText.has(definition.type) || definition.type === "select" && !definition.multiple && definition.options.some(({ id }) => id === source.filter!.equals))) {
-          problem("このフィールドは絞り込みに使えません。", source.filter.fieldId);
+        const definition = field(source.filter.fieldId), { filter } = source;
+        if ("includes" in filter) {
+          if (!definition || definition.type !== "reference" && !(definition.type === "select" && definition.multiple)) problem("includes は参照または複数選択のフィールドだけで使えます。", filter.fieldId);
+          else if (definition.type === "select" && !definition.options.some(({ id }) => id === filter.includes)) problem("絞り込みの選択肢がフィールドにありません。", filter.fieldId);
+        } else if (!definition || !(fieldText.has(definition.type) || definition.type === "select" && !definition.multiple && definition.options.some(({ id }) => id === filter.equals))) {
+          problem("このフィールドは絞り込みに使えません。", filter.fieldId);
         }
       }
       if (source.order && !fieldText.has(field(source.order.fieldId)?.type ?? "")) problem("このフィールドは並べ替えに使えません。", source.order.fieldId);
@@ -189,6 +197,7 @@ function listItems(list: CmsPageListBinding, items: readonly CmsItemRevision[], 
     if (item.collectionId !== list.collectionId) return false;
     if (!filter) return true;
     const value = item.values[filter.fieldId];
+    if ("includes" in filter) return Array.isArray(value) && value.includes(filter.includes);
     return value === filter.equals || Array.isArray(value) && value.length === 1 && value[0] === filter.equals;
   });
   const { order } = list;
