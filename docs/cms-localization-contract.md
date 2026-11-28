@@ -6,7 +6,7 @@
 
 項目の identity は `siteId`、`collectionId`、`itemId`、`sourceLocale`、`targetLocale` です。各翻訳単位はこの identity に不変の `fieldId` を加えます。表示名や変更可能な `key` は identity に使いません。`cmsLocalizationItemKey(collectionId, itemId)` は workspace と `niho-edit` で共有する item key を作り、field IDをbase64urlで符号化した `cms.field.<encodedFieldId>` を操作単位IDに使います。CMSが許可するfield ID全体を共通coreの単位ID制約内で衝突なく扱えます。locale は identity に明示し、`ja-JP` / `en-US` などの表記を保持します。現在の共通 translation core が扱う言語 family は日本語と英語です。generic localization core 内の page/site scope は派生IDで分離し、CMS の正本 identity は overlay に保持します。
 
-`collectCmsLocalizationUnits(schema, sourceItem, targetLocale)` は現在の schema と source revision を検証し、`text`、`longText`、`url`、`slug` の値を翻訳単位にします。空値と非テキスト値はそのまま残ります。`richText` は安全な parser をホストから受け取ったときだけ単位にします。parser は翻訳用の構造と無害化済み原文 HTML を返します。fingerprint は構造化した文章、原文 HTML、無害化済みHTMLを含みます。serializer は無害化済み原文 HTML を受け取るため、リンク先など翻訳対象外の属性を保ちながら再度 sanitizer を通せます。parser/serializer は許可タグと属性をホストで担保します。画像、参照、選択肢、日時、gallery等は自動翻訳へ渡しません。
+`collectCmsLocalizationUnits(schema, sourceItem, targetLocale)` は現在の schema と source revision を検証し、`text`、`longText`、`url`、`slug` の値を翻訳単位にします。空値と非テキスト値はそのまま残ります。`richText` は安全な parser をホストから受け取ったとき、または host が `richText: "html-source"` を指定したときに単位にします。`html-source` は 100,000 文字までの本文 HTML をそのまま `text` の単位にし、訳も HTML の文字列です。公開の安全性は host の公開時の変換が確保します（NIHO Web Studio はこの指定を使います）。parser を使う場合、parser は翻訳用の構造と無害化済み原文 HTML を返します。fingerprint は構造化した文章、原文 HTML、無害化済みHTMLを含みます。serializer は無害化済み原文 HTML を受け取るため、リンク先など翻訳対象外の属性を保ちながら再度 sanitizer を通せます。parser/serializer は許可タグと属性をホストで担保します。画像、参照、選択肢、日時、gallery等は自動翻訳へ渡しません。
 
 各単位の `sourceFingerprint` は identity、schema revision、原文を結び付けます。原文・定義が変わった古い結果は適用されません。ホストは CMS の翻訳項目画面と `niho-edit localization-*` の双方で、同じ `itemKey`、fieldId由来の `unitId`、locale pair、revision付きoverlay APIを使います。
 
@@ -26,6 +26,6 @@
 
 - Studio の翻訳 workspace と `niho-edit localization-*` が同じ collection/item/field ID と locale pair を読書きする。
 - 原文 revision が変わった後の古い AUTO 結果を拒否し、MANUAL 値を候補で保護する。
-- rich text を使う場合、ホスト sanitizer を通す parser と serializer の両方を渡す。
+- rich text を使う場合、ホスト sanitizer を通す parser と serializer の両方を渡すか、公開時に HTML を無害化する host だけが `html-source` を指定する。
 - locale ごとの target revision と公開snapshotを不変に保存し、previewは公開配信から隔離する。
 - fallbackの選択、404/route、asset、ETag、acknowledgementをホスト契約と実環境で確かめる。

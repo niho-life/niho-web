@@ -3,6 +3,7 @@ import { galleryEntries, type CollectionImageValue } from "../src/collection-mod
 import type { CmsPublicAsset, CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { managedVerificationTags } from "../src/managed-seo-settings.js";
 import { escapeHtml } from "./managed-cms-model.js";
+import { cmsRichTextNodes, cmsRichTextPlainText, decodeCmsReleaseRichText, renderCmsRichTextHtml } from "./managed-cms-rich-text.js";
 import { emptyManagedPublicPolicy, type ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { managedPublicHead, publicResourceSource } from "./managed-public-policy.js";
 import { ManagedPagePublicationError } from "./managed-page-publication.js";
@@ -40,6 +41,11 @@ function publicImage(image: CollectionImageValue | null, assets: ReadonlyMap<str
   return `<img src="${escapeHtml(asset.url)}" alt="${escapeHtml(asset.altText)}"${width}${height}>`;
 }
 
+function releaseRichText(value: string) {
+  let counter = 0;
+  return cmsRichTextNodes(decodeCmsReleaseRichText(value), () => `cms-text-${++counter}`);
+}
+
 function jsonLd(value: unknown): string {
   return `<script type="application/ld+json">${JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")}</script>`;
 }
@@ -51,7 +57,10 @@ function cmsMetadata(snapshot: CmsReleaseSnapshot, kind: RouteKind, collectionId
   if (kind === "list") return { title: collection.label, description: "" };
   const item = snapshot.items.find((candidate) => candidate.collectionId === collectionId && candidate.itemId === itemId);
   if (!item) return { title: collection.label, description: "" };
-  const presentation = previewCmsContent(snapshot.schema, item);
+  // 公開 release の本文はエスケープした HTML です。説明文には文字だけを使います。
+  const rich = new Set(collection.fields.filter(({ type }) => type === "richText").map(({ fieldId }) => fieldId));
+  const presentation = previewCmsContent(snapshot.schema, { ...item, values: Object.fromEntries(Object.entries(item.values).map(([fieldId, value]) =>
+    [fieldId, rich.has(fieldId) && typeof value === "string" ? cmsRichTextPlainText(releaseRichText(value)) : value])) });
   const text = presentation.fields.map(({ text: value }) => value).filter(Boolean).join(" ");
   return { title: presentation.title, description: text.trim().slice(0, 500) };
 }
@@ -110,7 +119,8 @@ async function renderCmsRoute(snapshot: CmsReleaseSnapshot, candidate: CmsStatic
           return rendered ? `<figure>${rendered}${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}</figure>` : "";
         }).join("");
         if (typeof value !== "string" || !["text", "longText", "richText", "datetime"].includes(type)) return "";
-        return `<p>${type === "richText" ? value : escapeHtml(value).replaceAll("\n", "<br>")}</p>`;
+        if (type === "richText") return `<div>${renderCmsRichTextHtml(releaseRichText(value), include)}</div>`;
+        return `<p>${escapeHtml(value).replaceAll("\n", "<br>")}</p>`;
       }).join("");
   } else {
     const links = kind === "list" && collection

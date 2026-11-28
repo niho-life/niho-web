@@ -121,6 +121,8 @@ locale 公開の確認・適用は `niho-edit --studio localization-release-read
 
 Studio-native は page version row に sidecar を一緒に保存します。固定ページの公開要求は現在の CMS route table を照合し、CMS `releaseId` と `schemaRevision` を page publication に固定します。要求中に CMS の世代またはページ一覧の版が変わった場合は HTTP 409 `version_conflict` になります。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。固定ページの公開要求では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
 
+`target: "rich-text"` は `richText` field を `div`・`section`・`article` の中身にします。対象の元の中身は仮の文字だけにします。`resolveCmsPageBindings` は HTML を解析しないため、host が `richText` 変換を渡し、渡さない場合は失敗します。Studio-native は公開時と preview で本文の HTML を許可した要素と属性だけに組み直してから、ページ文書の検証と公開の制限（画像の許可 origin、安全なリンク）を通します。`script`・`style`・`iframe`・フォームは中身ごと落とし、知らない要素は外して中身を残します。表は行ごとの段落になります。見出し ID は `index_` で始まる目次の飛び先だけを残します。ページ要素を使わない CMS の標準ページも同じ変換で本文を表示します。公開 release の値はエスケープした文字列のままで、外部ホストへの配信形式は変わりません。
+
 bindings の image mapping は安定 asset reference を使います。ホストがこの参照を公開描画で解決する場合は、[公開素材の manifest](#公開素材の-manifest) に固定された情報を使います。
 
 ## CMS 項目の翻訳

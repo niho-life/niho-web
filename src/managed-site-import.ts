@@ -2,7 +2,7 @@ import { resolvePageDocument } from "./components.js";
 import { walkNodes } from "./node-tree.js";
 import { assetKey } from "./assets.js";
 import { parseCmsPublicAssets } from "./cms-v2-assets.js";
-import { collectCmsLocalizationUnits, createCmsLocalizationOverlay, editCmsLocalizedValue, reviewCmsLocalizedValue } from "./cms-v2-localization.js";
+import { collectCmsLocalizationUnits, createCmsLocalizationOverlay, editCmsLocalizedValue, reviewCmsLocalizedValue, STUDIO_CMS_LOCALIZATION_OPTIONS } from "./cms-v2-localization.js";
 import { cmsTimestamp } from "./cms-v2-release.js";
 import { managedBlockContracts } from "./managed-embed-block.js";
 import { parseManagedSiteRedirects } from "./managed-site-redirects.js";
@@ -143,7 +143,7 @@ export async function buildSiteImportCmsLocalization(schema: CmsSchema, publishe
     if (raw === null) return null;
     if (!item) fail(path, "translation requires the corresponding source revision");
     const values = record(raw, path);
-    const collection = await collectCmsLocalizationUnits(schema, item, targetLocale);
+    const collection = await collectCmsLocalizationUnits(schema, item, targetLocale, STUDIO_CMS_LOCALIZATION_OPTIONS);
     keys(values, collection.fields.map(({ identity }) => identity.fieldId), path);
     let result = createCmsLocalizationOverlay(collection);
     for (const [fieldId, rawField] of Object.entries(values)) {

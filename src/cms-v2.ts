@@ -30,7 +30,7 @@ export { parseCmsRoutePath, parseCmsRouteTable, planCmsRouteTable } from "./cms-
 export {
   applyAutomaticCmsTranslationResult, cmsLocalizationItemKey, cmsLocalizationStatus, collectCmsLocalizationUnits,
   createCmsLocalizationOverlay, editCmsLocalizedValue, materializeCmsLocalizedItem, parseCmsLocalizationIdentity,
-  parseCmsLocalizationItemKey, parseCmsLocalizationOverlay, reviewCmsLocalizedValue
+  parseCmsLocalizationItemKey, parseCmsLocalizationOverlay, reviewCmsLocalizedValue, STUDIO_CMS_LOCALIZATION_OPTIONS
 } from "./cms-v2-localization.js";
 export type {
   CmsLocalizationCollection, CmsLocalizationField, CmsLocalizationFieldKind, CmsLocalizationIdentity,
