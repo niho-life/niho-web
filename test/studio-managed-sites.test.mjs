@@ -2726,6 +2726,10 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
     redirects: [{ locale: "ja", fromPath: "/old", toPath: "/en" }],
     scheduled: [{ kind: "page", sourceUrl: origin + "/english", at: "2035-01-01T00:00:00.000Z" }]
   };
+  const repeatedStyle = { base: { fontFamily: "Fixture Sans", fontSize: "16px", lineHeight: 1.5, letterSpacing: 0 } };
+  source.pages[0].draft.document.body.push(...Array.from({ length: 2 }, (_, index) => ({
+    type: "element", id: `normalizable-${index}`, tag: "p", style: structuredClone(repeatedStyle), children: [{ type: "text", text: "繰り返しの文字スタイル" }]
+  })));
   const missingReference = structuredClone(source);
   missingReference.cms.items[0].draft.related = ["missing-source-item"];
   const missingReferenceBytes = Buffer.from(JSON.stringify(missingReference));
@@ -2734,6 +2738,16 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   const bytes = Buffer.from(JSON.stringify(source)), digest = createHash("sha256").update(bytes).digest("hex");
   await assert.rejects(() => prepareKamakuraSiteImport(Buffer.concat([bytes, Buffer.from("\n")]), digest, target), /source_checksum_mismatch/);
   const prepared = await prepareKamakuraSiteImport(bytes, digest, target, embedConnections);
+  const normalizedSize = prepared.mapping.pages[0].documentBytes.draft;
+  assert.ok(normalizedSize.losslessOperations > 0);
+  assert.ok(normalizedSize.after < normalizedSize.before);
+  assert.ok(prepared.pages[0].draft.textStyles && Object.keys(prepared.pages[0].draft.textStyles).length > 0);
+  const oversized = structuredClone(source);
+  oversized.pages[0].draft.document.body.push(...Array.from({ length: 30 }, (_, index) => ({
+    type: "element", id: `oversized-${index}`, tag: "p", children: [{ type: "text", text: "A".repeat(9_000) }]
+  })));
+  const oversizedBytes = Buffer.from(JSON.stringify(oversized)), oversizedDigest = createHash("sha256").update(oversizedBytes).digest("hex");
+  await assert.rejects(() => prepareKamakuraSiteImport(oversizedBytes, oversizedDigest, target, embedConnections), /exceeds 200 KiB after lossless normalization/u);
   const loadAsset = async () => media;
   await assert.rejects(() => applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, async () => Buffer.alloc(media.length)),
     /source_asset_checksum_mismatch/);
