@@ -354,10 +354,11 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     return JSON.parse(Buffer.from(claims, "base64url").toString("utf8"));
   };
   let delegated = await assertDelegationSignature(editingApiRequest);
-  assert.deepEqual(delegated.scope, ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write"]);
+  assert.deepEqual(delegated.scope, ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish"]);
   assert.equal(delegated.iss, "niho-web-studio-edit");
   assert.equal(delegated.aud, "kamakura-site");
   assert.equal(delegated.sub, "catalog-contract-test");
+  assert.equal(delegated.email, "catalog-test@niho.life", "検証済みのAccess identity emailをホスト監査へ委任する");
   assert.equal(delegated.exp - delegated.iat, 60);
   assert.match(delegated.jti, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 
@@ -397,6 +398,30 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   const saveFetchCount = boundRequestIds.length;
   assert.equal((await callEditingApi(savePath, "PUT", saveBody, { Origin: "https://other.example" })).status, 400);
   assert.equal(boundRequestIds.length, saveFetchCount, "CSRF拒否時はサイトAPIへ転送しない");
+
+  let cmsUpstream;
+  bindingResponseFactory = async (request) => {
+    cmsUpstream = { url: request.url, method: request.method, body: new Uint8Array(await request.arrayBuffer()), claims: await assertDelegationSignature(request) };
+    return Response.json({ status: "accepted" });
+  };
+  const cmsSchemaResponse = await callEditingApi("/sites/kamakura/operations/cms.schema");
+  assert.equal(cmsSchemaResponse.status, 200);
+  assert.equal(cmsUpstream.url, "https://kamakura.niho.life/api/edit/v1/sites/kamakura/operations/cms.schema");
+  assert.deepEqual(cmsUpstream.claims.scope, ["cms.read"]);
+  const largeCmsBody = { expectedVersion: "cms-version", operationId: "123e4567-e89b-42d3-a456-426614174000", values: { body: "x".repeat(700 * 1024) } };
+  const cmsSaveResponse = await callEditingApi("/sites/kamakura/operations/cms.save/posts/demo-entry", "PUT", largeCmsBody);
+  assert.equal(cmsSaveResponse.status, 200, "CMS本文はページ編集の600 KiB制限より大きくてもBFFを通る");
+  assert.deepEqual(cmsUpstream.claims.scope, ["cms.edit"]);
+  assert.equal(cmsUpstream.url, "https://kamakura.niho.life/api/edit/v1/sites/kamakura/operations/cms.save/posts/demo-entry");
+  assert.equal(JSON.parse(new TextDecoder().decode(cmsUpstream.body)).values.body.length, 700 * 1024);
+  const cmsPublishResponse = await callEditingApi("/sites/kamakura/operations/cms.publish-plan/posts/demo-entry", "POST", {
+    expectedVersion: "cms-version", operationId: "123e4567-e89b-42d3-a456-426614174001", redirect: false
+  });
+  assert.equal(cmsPublishResponse.status, 200);
+  assert.deepEqual(cmsUpstream.claims.scope, ["cms.publish"]);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(cmsUpstream.body)), {
+    expectedVersion: "cms-version", operationId: "123e4567-e89b-42d3-a456-426614174001", redirect: false
+  });
 
   const breakpointReadUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.read";
   const breakpointSaveUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.save";
