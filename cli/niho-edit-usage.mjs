@@ -22,6 +22,9 @@ niho-edit [--studio] --origin <https-origin> --site <site-id> release <page-id> 
 niho-edit [--studio] --origin <https-origin> --site <site-id> publish <page-id> --locale <locale> (--expected-version <version> | --json <snapshot-file|->)
 niho-edit --studio --origin <studio-origin> --site <site-id> publish <page-id> <page-id> [...] --locale <locale>
 niho-edit --studio --origin <studio-origin> --site <site-id> changes
+niho-edit --studio --origin <studio-origin> --site <site-id> pull [dir]
+niho-edit --studio --origin <studio-origin> --site <site-id> check [dir] [--all] [--html <out-dir>]
+niho-edit --studio --origin <studio-origin> --site <site-id> push [dir]
 niho-edit --studio --origin <studio-origin> --site <site-id> site-history
 niho-edit --studio --origin <studio-origin> --site <site-id> rollback <release-id>
 niho-edit --studio --origin <studio-origin> --site <site-id> publish --site
@@ -95,6 +98,7 @@ site-redirects-read returns { redirects, version }. Edit the redirects array and
 For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
 Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.
+pull はサイトを dir（既定は .）へ書き出します。pages/<locale>/<page-id>.json、cms/<collection-id>/<item-id>.json、site/seo.json・redirects.json・public.json・styles.json を編集し、版と操作 ID を持つ .niho/ は触りません。check はサーバーに問い合わせず、変わったファイル（--all で全ファイル）を検証し、--html で本文の参考描画も書きます。push は変わったファイルだけを版照合付きで下書きに保存します（公開しません）。競合したファイルは保存せず報告し、ほかのファイルの保存は続けます。公開は publish --changed です。
 lint は指定したページ、または catalog にある全ページの問題をJSONで表示します。問題があれば終了コード1、なければ0です。normalize analyze と plan はローカルで実行します。apply は版照合付きで適用し、状態を記録します。色の置換と表示幅の変更には --approve が必要です。resume は未確定のページ操作を再試行し、undo は適用済みの変更を戻します。verify は現在の文書を読み直して描画入力を比較します。
 
 Studio 内サイトの GUI 操作と niho-edit --studio の対応
