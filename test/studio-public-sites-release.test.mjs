@@ -29,13 +29,14 @@ test("public release settings require distinct HTTPS origins and a preview-only 
 test("public release allows pending known Studio-only migrations but blocks required and unknown migrations", () => {
   assert.deepEqual(classifyPublicReleaseMigrations([
     "0022_managed_site_redirect_versions.sql", "0024_managed_one_step_publish.sql",
-    "0025_managed_site_imports.sql", "0026_managed_site_styles.sql", "0027_managed_site_publication_history_details.sql"
+    "0025_managed_site_imports.sql", "0026_managed_site_styles.sql", "0027_managed_site_publication_history_details.sql",
+    "0028_managed_site_assets.sql"
   ]), { required: [], unknown: [] });
   assert.deepEqual(classifyPublicReleaseMigrations([
     "0021_managed_page_sources.sql", "0022_managed_site_redirect_versions.sql"
   ]), { required: ["0021_managed_page_sources.sql"], unknown: [] });
-  assert.deepEqual(classifyPublicReleaseMigrations(["0027_unreviewed_migration.sql"]), {
-    required: [], unknown: ["0027_unreviewed_migration.sql"]
+  assert.deepEqual(classifyPublicReleaseMigrations(["0028_unreviewed_migration.sql"]), {
+    required: [], unknown: ["0028_unreviewed_migration.sql"]
   });
 });
 

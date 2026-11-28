@@ -22,7 +22,9 @@ const allowedStudioOnlyMigrations = new Set([
   "0024_managed_one_step_publish.sql",
   "0025_managed_site_imports.sql",
   "0026_managed_site_styles.sql",
-  "0027_managed_site_publication_history_details.sql"
+  "0027_managed_site_publication_history_details.sql",
+  // 画像の配信は Studio 本体の Worker（PUBLIC_SITES_ORIGIN）だけが読む。
+  "0028_managed_site_assets.sql"
 ]);
 
 export function classifyPublicReleaseMigrations(pending) {
