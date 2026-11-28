@@ -1,7 +1,7 @@
 import { parsePageDocument } from "./document.js";
 import { managedBlockContracts } from "./managed-embed-block.js";
 import { parseSiteStyles, type SiteFrame, type SiteFrameLocale, type SiteStyles } from "./site-styles.js";
-import { parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
+import { MAX_TEXT_STYLES, parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
 import type { ElementNode, PageDocument, PageNode } from "./types.js";
 import { fail, keys, localeCode, record } from "./validation-utils.js";
 
@@ -49,9 +49,24 @@ export function parseSiteStylesWithFrame(input: SiteStyles): SiteStyles {
   return { ...base, ...(locales.length ? { frame } : {}) };
 }
 
-function withPrefix(nodes: readonly PageNode[], prefix: string): PageNode[] {
-  return nodes.map((node): PageNode => node.type === "element" ? { ...node, id: prefix + node.id, children: withPrefix(node.children, prefix) }
-    : node.type === "component" ? { ...node, id: prefix + node.id } : node);
+/** 枠の節点に接頭辞を付ける。ページの本文と同じ HTML の id（例: footer）は枠の側から外し、ページの側を残す。 */
+function withPrefix(nodes: readonly PageNode[], prefix: string, pageHtmlIds: ReadonlySet<string>): PageNode[] {
+  return nodes.map((node): PageNode => {
+    if (node.type === "component") return { ...node, id: prefix + node.id };
+    if (node.type !== "element") return node;
+    const children = withPrefix(node.children, prefix, pageHtmlIds);
+    if (node.attrs?.id === undefined || !pageHtmlIds.has(String(node.attrs.id))) return { ...node, id: prefix + node.id, children };
+    const { id: _htmlId, ...attrs } = node.attrs, { attrs: _attrs, ...rest } = node;
+    return { ...rest, id: prefix + node.id, ...(Object.keys(attrs).length ? { attrs } : {}), children };
+  });
+}
+function htmlIds(nodes: readonly PageNode[], result = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    if (node.type !== "element") continue;
+    if (node.attrs?.id !== undefined) result.add(String(node.attrs.id));
+    htmlIds(node.children, result);
+  }
+  return result;
 }
 function hasMain(nodes: readonly PageNode[]): boolean {
   return nodes.some((node) => node.type === "element" && (node.tag === "main" || hasMain(node.children)));
@@ -68,13 +83,25 @@ function ids(nodes: readonly PageNode[], result: string[] = []): string[] {
 export function composeSiteFrame(document: PageDocument, frame: SiteFrame | undefined): PageDocument {
   const entry = frame?.[document.locale];
   if (!entry) return document;
-  const used = ids(document.body);
+  const used = ids(document.body), pageIds = htmlIds(document.body);
   let base = "nwframe", attempt = 0;
   while (used.some((id) => id.startsWith(base))) base = `nwframe${++attempt}x`;
   // 本文に main が既にあれば、包みは div にして main を二重にしない。
   const main: ElementNode = { type: "element", id: `${base}-main`, tag: hasMain(document.body) ? "div" : "main", children: document.body };
   const root: ElementNode = { type: "element", id: `${base}-root`, tag: "div", ...(entry.layout ? { style: entry.layout } : {}),
-    children: [...withPrefix(entry.header, `${base}-h-`), main, ...withPrefix(entry.footer, `${base}-f-`)] };
-  const tokens = { ...entry.tokens, ...document.tokens }, textStyles = { ...entry.textStyles, ...document.textStyles };
+    children: [...withPrefix(entry.header, `${base}-h-`, pageIds), main, ...withPrefix(entry.footer, `${base}-f-`, pageIds)] };
+  const tokens = { ...entry.tokens, ...document.tokens }, merged = { ...entry.textStyles, ...document.textStyles };
+  // 枠とページを足すと上限を超えることがある（取り込んだ鎌倉のトップ）。そのときは、どの節点も使っていないものを外す。
+  const textStyles = Object.keys(merged).length > MAX_TEXT_STYLES ? usedTextStyles(merged, [root]) : merged;
   return { ...document, tokens, ...(Object.keys(textStyles).length ? { textStyles } : {}), body: [root] };
+}
+function usedTextStyles<T>(textStyles: Readonly<Record<string, T>>, nodes: readonly PageNode[]): Record<string, T> {
+  const used = new Set<string>();
+  const visit = (items: readonly PageNode[]) => { for (const node of items) {
+    if (node.type === "text") continue;
+    if (node.style?.textStyle) used.add(node.style.textStyle);
+    if (node.type === "element") visit(node.children);
+  } };
+  visit(nodes);
+  return Object.fromEntries(Object.entries(textStyles).filter(([name]) => used.has(name)));
 }

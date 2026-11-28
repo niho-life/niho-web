@@ -445,7 +445,7 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
     assert.equal(await shortcut(heading, "Escape", { isComposing: true }), false);
     assert.equal(heading.textContent, "入力中");
     assert.ok(await shortcut(heading, "Escape"));
-    assert.equal(heading.textContent, original); assert.equal(canvasBody().querySelector(".nw-text-toolbar"), null);
+    assert.equal(canvasNode("heading").textContent, original, "Esc rebuilds the element from the draft"); assert.equal(canvasBody().querySelector(".nw-text-toolbar"), null);
     assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
     assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
     const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");

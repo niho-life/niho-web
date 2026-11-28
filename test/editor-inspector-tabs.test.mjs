@@ -108,6 +108,65 @@ test("canvas text is committed by ⌘Enter or leaving the element and cancelled 
   } finally { await app.cleanup(); }
 });
 
+test("a canvas text edit that was cancelled, redone and undone leaves the canvas matching the draft", async () => {
+  const app = await setup();
+  try {
+    const original = fixture.body[0].children[0].children[0].text;
+    let heading = await canvasEvent("h1", "dblclick"); heading.firstChild.textContent = "取り消す変更";
+    // ブラウザは contenteditable を外すと blur を送る。取り消しの途中で、その blur が確定にならないことも確かめる。
+    const removeAttribute = heading.removeAttribute.bind(heading);
+    heading.removeAttribute = (name) => { removeAttribute(name); if (name === "contenteditable") heading.dispatchEvent(new (frame().contentWindow.FocusEvent)("focusout", { bubbles: true })); };
+    heading = await canvasEvent("h1", "keydown", { key: "Escape" });
+    assert.equal(heading.textContent, original);
+    assert.equal(input("テキスト", right()).value, original, "Escape does not save the cancelled text");
+    heading = await canvasEvent("h1", "dblclick"); heading.firstChild.textContent = "確定する変更";
+    await act(async () => heading.dispatchEvent(new (frame().contentWindow.FocusEvent)("focusout", { bubbles: true }))); await flush();
+    assert.equal(frame().contentDocument.querySelector("h1").textContent, "確定する変更");
+    await click(button("元に戻す"));
+    assert.equal(frame().contentDocument.querySelector("h1").textContent, original, "undo reaches the canvas after a cancelled direct edit");
+    assert.equal(input("テキスト", right()).value, original);
+  } finally { await app.cleanup(); }
+});
+
+function twoSections() {
+  const page = structuredClone(fixture);
+  page.body = ["a", "b"].map((id) => ({ type: "element", id, tag: "section", children: [{ type: "element", id: `${id}-p`, tag: "p", children: [{ type: "text", text: id }] }] }));
+  return page;
+}
+const topLevelIds = () => [...frame().contentDocument.querySelectorAll("[data-nw-node]")].filter((node) => !node.parentElement.closest("[data-nw-node]")).map((node) => node.dataset.nwNode);
+async function addText() {
+  await click(button("追加"));
+  const target = document.querySelector('.e-preset-preview[data-preset="text"]')?.closest("button"); assert.ok(target);
+  await click(target);
+}
+
+test("adding an element puts it right after the selected element, and an explicit destination keeps its meaning", async () => {
+  const app = await setup({ document: twoSections() });
+  try {
+    await canvasEvent('[data-nw-node="a"]', "click");
+    await addText();
+    const ids = topLevelIds();
+    assert.equal(ids.length, 3); assert.equal(ids[0], "a"); assert.equal(ids[2], "b"); assert.notEqual(ids[1], "a");
+    // 何も選ばない追加は従来どおり末尾。
+    await click(button("追加"));
+    const destination = document.querySelector('select[aria-label="追加・移動先"]');
+    await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, "value").set.call(destination, "b"); destination.dispatchEvent(new dom.window.Event("change", { bubbles: true })); }); await flush();
+    await canvasEvent('[data-nw-node="a"]', "click");
+    await addText();
+    assert.equal(frame().contentDocument.querySelector('[data-nw-node="b"]').children.length, 2, "an explicit destination wins over the selection");
+    assert.equal(topLevelIds().length, 3);
+  } finally { await app.cleanup(); }
+});
+
+test("adding with nothing selected appends to the end of the page", async () => {
+  const app = await setup({ document: twoSections() });
+  try {
+    await addText();
+    const ids = topLevelIds();
+    assert.equal(ids.length, 3); assert.deepEqual(ids.slice(0, 2), ["a", "b"]);
+  } finally { await app.cleanup(); }
+});
+
 test("the text tab lists text styles and shared colors under the place they are defined", async () => {
   const host = siteStyled(), app = await setup({ document: host.page, adapter: host.adapter });
   try {
