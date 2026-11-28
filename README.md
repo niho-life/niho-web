@@ -26,7 +26,7 @@ Node.js 22 以上を使います。
 | @niho/web/editor | Studio 編集画面と再検証付きページ切替 |
 | @niho/web/editor-model | React 不要の編集操作 |
 | @niho/web/cms-delivery | CMS 公開 |
-| @niho/web/cms-v2 | CMS 定義・項目別公開 URL |
+| @niho/web/cms-v2 | CMS 定義 |
 | @niho/web/collection-model | Collection 型 |
 | @niho/web/assets | 素材参照 |
 | @niho/web/site-analytics | サイト分析の接続 |

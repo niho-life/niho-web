@@ -243,10 +243,29 @@ export class CmsStore {
       kind: visibility === "public" && published_revision !== null ? "fixed-page" as const : "reserved" as const, path,
       reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale, page_id, path })).slice(0, 32)}`
     })));
+    const otherReleases = [
+      ...(site.state.current && site.state.locale !== locale ? [{ locale: site.state.locale, releaseId: site.state.current.id }] : []),
+      ...Object.entries(site.state.localizedReleases ?? {}).flatMap(([releasedLocale, release]) =>
+        releasedLocale !== locale ? [{ locale: releasedLocale, releaseId: release.id }] : [])
+    ].sort((left, right) => left.locale.localeCompare(right.locale));
+    // All locales share one URL namespace; reserve the published CMS paths from other locales.
+    const foreignPaths = new Map<string, string>();
+    const foreignSnapshots = await Promise.all(otherReleases.map(async (release) => ({ ...release,
+      snapshot: await this.snapshot(site.siteId, release.releaseId) })));
+    for (const { locale: releasedLocale, snapshot: release } of foreignSnapshots) {
+      for (const path of [
+        ...release.items.flatMap((item) => item.path ? [item.path] : []),
+        ...release.redirects.map(({ from }) => from)
+      ]) foreignPaths.set(path, releasedLocale);
+    }
+    const foreignCms = await Promise.all([...foreignPaths].map(async ([path, releasedLocale]) => ({
+      kind: "reserved" as const, path,
+      reservationId: `cms_locale_route_${(await digest({ locale: releasedLocale, path })).slice(0, 32)}`
+    })));
     const withoutOldFixed = base.reservations.filter((reservation) => !((reservation.kind === "fixed-page" || reservation.kind === "reserved")
-      && reservation.reservationId.startsWith("managed_page_")));
+      && (reservation.reservationId.startsWith("managed_page_") || reservation.reservationId.startsWith("cms_locale_route_"))));
     const next = parseCmsRouteTable({ siteId: site.siteId, locale, revision: base.revision,
-      reservations: [...withoutOldFixed, ...fixed] }, site.siteId, locale);
+      reservations: [...withoutOldFixed, ...fixed, ...foreignCms] }, site.siteId, locale);
     const unchanged = JSON.stringify(next.reservations) === JSON.stringify(base.reservations);
     return unchanged ? next : parseCmsRouteTable({ ...next, revision: `routes_${await digest(next.reservations)}` }, site.siteId, locale);
   }
