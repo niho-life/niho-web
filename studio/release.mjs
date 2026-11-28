@@ -85,6 +85,12 @@ export function pendingMigrations(stdout) {
   });
 }
 
+// Count public pages the same way as the Dashboard overview.
+export function registeredManagedSiteQuery(project, site) {
+  if (!identifier.test(project) || !identifier.test(site)) throw new ReleaseError("smoke の対象プロジェクトとサイトの ID が正しくありません。");
+  return `SELECT ms.slug, (SELECT count(*) FROM managed_pages AS mp WHERE mp.site_id = s.id AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL) AS published_page_count FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = '${project}' AND s.id = '${site}' LIMIT 2`;
+}
+
 export function registeredManagedSite(stdout) {
   let output;
   try { output = JSON.parse(stripVTControlCharacters(stdout)); }
@@ -206,7 +212,7 @@ function smokeRequest(settings, request = fetch) {
 }
 
 async function smokeServiceAccess(settings, get, readRegisteredSite) {
-  const capabilities = JSON.parse(await get("Studio 編集 API", `/api/edit/v2/sites/${settings.site}/capabilities`, ["application/json"]));
+  const capabilities = JSON.parse(await get("Studio 編集 API", `/api/edit/v1/sites/${settings.site}/capabilities`, ["application/json"]));
   if (capabilities?.siteId !== settings.site || !Array.isArray(capabilities.operations)
     || !capabilities.operations.some((operation) => operation?.id === "pages.read")) {
     throw new ReleaseError("Studio 編集 API で対象サイトの pages.read を確認できません。service token への委任を確認してください。");
@@ -238,11 +244,10 @@ export async function smokeStudio(settings, assets, request = fetch, readRegiste
   } else {
     const response = await getResponse("未公開サイトの公開 path", settings.publicPath, true);
     const headers = response.headers;
-    const body = await response.arrayBuffer();
-    if (response.status !== 404 || headers.get("Content-Type")?.toLowerCase().split(";")[0] !== "text/plain"
-      || headers.get("Cache-Control") !== "no-store" || headers.get("X-Content-Type-Options") !== "nosniff"
-      || headers.get("Cross-Origin-Resource-Policy") !== "same-origin" || headers.get("Referrer-Policy") !== "no-referrer"
-      || headers.get("X-Frame-Options") !== "DENY" || body.byteLength !== 0) {
+    await response.arrayBuffer();
+    const policy = (headers.get("Content-Security-Policy") ?? "").split(";").map((directive) => directive.trim());
+    if (response.status !== 404 || headers.get("Cache-Control") !== "no-store" || headers.get("X-Content-Type-Options") !== "nosniff"
+      || !policy.includes("default-src 'none'") || !policy.includes("frame-ancestors 'none'")) {
       throw new ReleaseError("未公開サイトの公開 path が安全な404を返しません。");
     }
   }
@@ -259,9 +264,7 @@ async function release() {
     const config = writeConfig(directory, settings);
     const wrangler = (...args) => runWrangler(config, settings, ...args);
     const readRegisteredSite = (project, site) => {
-      // Count public pages the same way as the Dashboard overview.
-      const sql = `SELECT ms.slug, (SELECT count(*) FROM managed_pages AS mp WHERE mp.site_id = s.id AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL) AS published_page_count FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = '${project}' AND s.id = '${site}' LIMIT 2`;
-      const stdout = wrangler("対象サイトの登録済み slug と公開状態を確認", "d1", "execute", "DB", "--remote", "--json", "--command", sql);
+      const stdout = wrangler("対象サイトの登録済み slug と公開状態を確認", "d1", "execute", "DB", "--remote", "--json", "--command", registeredManagedSiteQuery(project, site));
       return registeredManagedSite(stdout);
     };
     const status = () => JSON.parse(wrangler("Worker の配備状況を確認", "deployments", "status", "--json"));

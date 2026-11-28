@@ -48,7 +48,7 @@ Worker は service token に対し、`/api/edit/` の委任済み操作と版付
 2. 切り戻し先、Worker secret、service token で読める対象サイトの `pages.read` を確認します。現在の Worker は単一 version が 100% のトラフィックを受けている必要があります。
 3. Wrangler で D1 の適用状況を確認し、配備前に適用できる未適用 migration があれば適用します。再確認で未適用が 0 件になってから配備します。
 4. Wrangler で Worker と静的 asset を配備します。`studio:build` は Studio 用 `dist/public` と公開 Worker 用 `dist/public-sites` を生成し、公開配信用には許可した `/_niho/` のランタイムだけを含めます。
-5. service token で対象サイトの編集 API の操作一覧を読み、今回のビルドと一致する entry script と Dashboard の遅延読込 chunk を確認します。smoke path の slug が D1 の対象サイトに登録された slug と一致することも確認します。D1 で公開ページがあれば代表ページの `og:url`、なければ公開 path が no-store と安全ヘッダー付きの空の404を返すことを確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
+5. service token で対象サイトの編集 API の操作一覧を読み、今回のビルドと一致する entry script と Dashboard の遅延読込 chunk を確認します。smoke path の slug が D1 の対象サイトに登録された slug と一致することも確認します。D1 で公開ページがあれば代表ページの `og:url`、なければ公開 path が no-store・nosniff と `default-src 'none'`・`frame-ancestors 'none'` の CSP 付きの404を返すことを確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
 
 失敗したステップを表示し、終了コードは非 0 になります。配備を開始した後の失敗では、切り戻し手順も表示します。
 

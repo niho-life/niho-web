@@ -133,7 +133,7 @@ function smokeFixture(publishedPageCount, publicResponse) {
     assert.equal(url.origin, settings.studioOrigin);
     assert.equal(options.headers["CF-Access-Client-Id"], env.STUDIO_SMOKE_ACCESS_CLIENT_ID);
     assert.equal(options.headers["CF-Access-Client-Secret"], env.STUDIO_SMOKE_ACCESS_CLIENT_SECRET);
-    if (url.pathname === `/api/edit/v2/sites/${settings.site}/capabilities`) return capabilities(settings.site);
+    if (url.pathname === `/api/edit/v1/sites/${settings.site}/capabilities`) return capabilities(settings.site);
     if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
     if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
     assert.fail("Unexpected smoke request");
@@ -145,7 +145,7 @@ test("release smoke sends the service token only to Studio and checks build asse
   const { settings, assets, readRegisteredSite, requests, ok, request } = smokeFixture(1,
     (rawUrl) => new Response(`<meta property="og:url" content="${rawUrl}">`, { headers: { "Content-Type": "text/html" } }));
   await smokeStudio(settings, assets, request, readRegisteredSite);
-  assert.deepEqual(requests, [`/api/edit/v2/sites/${settings.site}/capabilities`, assets.entry, assets.chunkPath, settings.publicPath]);
+  assert.deepEqual(requests, [`/api/edit/v1/sites/${settings.site}/capabilities`, assets.entry, assets.chunkPath, settings.publicPath]);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(assets.chunkPath)
     ? ok("old chunk", "application/javascript") : request(url, options), readRegisteredSite), /遅延読込 chunk/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
@@ -161,16 +161,18 @@ test("release smoke sends the service token only to Studio and checks build asse
 });
 
 test("release smoke accepts an unpublished managed site only when its public path returns a safe 404", async () => {
-  const safeNotFound = () => new Response(null, { status: 404, headers: {
-    "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8",
-    "Cross-Origin-Resource-Policy": "same-origin", "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"
+  const safeNotFound = () => new Response("<!doctype html><title>Not found</title>", { status: 404, headers: {
+    "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
   } });
   const { settings, assets, readRegisteredSite, requests, ok, request } = smokeFixture(0, safeNotFound);
   await smokeStudio(settings, assets, request, readRegisteredSite);
-  assert.deepEqual(requests, [`/api/edit/v2/sites/${settings.site}/capabilities`, assets.entry, assets.chunkPath, settings.publicPath]);
+  assert.deepEqual(requests, [`/api/edit/v1/sites/${settings.site}/capabilities`, assets.entry, assets.chunkPath, settings.publicPath]);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
     ? new Response(null, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } }) : request(url, options), readRegisteredSite), /安全な404/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
+    ? new Response(null, { status: 404, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "frame-ancestors 'none'" } })
+    : request(url, options), readRegisteredSite), /安全な404/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
     ? ok("unexpected published page", "text/html") : request(url, options), readRegisteredSite), /安全な404/u);
   await assert.rejects(() => smokeStudio(settings, assets, request, async () => ({ slug: "another-site", publishedPageCount: 0 })), /登録済み slug/u);

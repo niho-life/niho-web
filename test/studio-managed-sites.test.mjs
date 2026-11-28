@@ -13,6 +13,7 @@ import { parseLocalizationItemResult, parseLocalizationListResult, parseLocaliza
 import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
 import { renderPageToHtml } from "../dist/server.js";
+import { readReleaseSettings, registeredManagedSite, registeredManagedSiteQuery, smokeStudio } from "../studio/release.mjs";
 import { cmsDeliveryHash, parseCmsDeliverySnapshot, serializeCmsDeliverySnapshot, signCmsDeliveryRequest } from "../dist/cms-delivery-contract.js";
 
 const { DatabaseSync } = await import("node:sqlite").catch(() => ({}));
@@ -298,6 +299,38 @@ testWithD1("Access service token reads only versioned Studio build files outside
   assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "GET", "/api/session", undefined, service), 401)).error, "session_expired");
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", "/assets/app-0123456789ab.js", undefined, service)).status, 401);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", "/assets/app-0123456789ab.js")).status, 200);
+});
+
+testWithD1("release smoke passes against the Studio Worker with only a pages.read service grant", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Release smoke", slug: "release-smoke", locale: "ja" }), 201);
+  const readRegisteredSite = async (project, siteId) => registeredManagedSite(JSON.stringify([{ success: true,
+    results: h.sqlite.prepare(registeredManagedSiteQuery(project, siteId)).all() }]));
+  const { slug } = await readRegisteredSite(site.projectId, site.siteId);
+  const settings = readReleaseSettings({
+    CLOUDFLARE_ACCOUNT_ID: "a".repeat(32), STUDIO_DATABASE_ID: "dddddddd-eeee-4444-8888-ffffffffffff",
+    STUDIO_ORIGIN: MANAGEMENT_ORIGIN, PUBLIC_SITES_ORIGIN: PUBLIC_ORIGIN,
+    STUDIO_ACCESS_ISSUER: "https://access.example.test", STUDIO_ACCESS_AUDIENCE: "b".repeat(64),
+    STUDIO_SMOKE_PROJECT_ID: site.projectId, STUDIO_SMOKE_SITE_ID: site.siteId, STUDIO_SMOKE_PUBLIC_PATH: `/s/${slug}/`,
+    STUDIO_SMOKE_ACCESS_CLIENT_ID: SERVICE_CLIENT, STUDIO_SMOKE_ACCESS_CLIENT_SECRET: "e".repeat(64)
+  });
+  const script = Buffer.from("export {};");
+  h.env.ASSETS = { async fetch() { return new Response(script, { headers: { "Content-Type": "text/javascript" } }); } };
+  const assets = { entry: "/assets/app-0123456789ab.js", script, chunkPath: "/assets/chunks/project-dashboard-AAA11111.js", chunk: script };
+  // Access exchanges the service token credentials for its JWT before the request reaches the Worker.
+  const request = (url, init) => {
+    const headers = new Headers(init.headers);
+    if (headers.get("CF-Access-Client-Id") === SERVICE_CLIENT) {
+      headers.delete("CF-Access-Client-Id");
+      headers.delete("CF-Access-Client-Secret");
+      headers.set("Cf-Access-Jwt-Assertion", h.serviceToken);
+    }
+    return h.fetch(url, { headers });
+  };
+  await assert.rejects(() => smokeStudio(settings, assets, request, readRegisteredSite), /HTTP 403/u);
+  h.sqlite.prepare(`INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject) VALUES (?, ?, ?, 'pages.read', ?)`)
+    .run(SERVICE_CLIENT, site.projectId, site.siteId, OWNER);
+  await smokeStudio(settings, assets, request, readRegisteredSite);
 });
 
 testWithD1("Studio CLI shares public delivery settings, separate versions and owner grants with the GUI", async (t) => {
