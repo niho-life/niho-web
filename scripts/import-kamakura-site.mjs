@@ -210,15 +210,20 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
       keys(raw, ["collectionId", "itemId", "published", "draft", "translations"], at);
       const collectionId = cmsId(raw.collectionId, `${at}.collectionId`), itemId = cmsId(raw.itemId, `${at}.itemId`);
       const collection = cmsCollection(schema, collectionId);
-      const item = { collectionId, itemId, published: raw.published === null ? null : mapCmsValues(raw.published, collection, bySource, byUrl, targetItemIds, `${at}.published`, input.origin),
+      const mapped = { collectionId, itemId, published: raw.published === null ? null : mapCmsValues(raw.published, collection, bySource, byUrl, targetItemIds, `${at}.published`, input.origin),
         draft: mapCmsValues(raw.draft, collection, bySource, byUrl, targetItemIds, `${at}.draft`, input.origin),
         ...(raw.translations === undefined ? {} : { translations: raw.translations }) };
+      // 公開版と同じ値・同じ訳の下書きは別の版にしない（draft: null は「下書きは公開版」）。取り込みの後に未公開の変更として残らないようにする。
+      const sameDraft = mapped.published !== null && await siteImportDigest(mapped.published) === await siteImportDigest(mapped.draft)
+        && (mapped.translations === undefined || await siteImportDigest(record(mapped.translations, `${at}.translations`).published ?? null)
+          === await siteImportDigest(record(mapped.translations, `${at}.translations`).draft ?? null));
+      const item = sameDraft ? { ...mapped, draft: null } : mapped;
       const targetItemId = targetItemIds.get(cmsItemKey(item));
       if (!targetItemId) fail(at, "missing target CMS item mapping");
       if (item.translations !== undefined) {
         const revision = (values, revision) => ({ siteId: target.siteId, schemaRevision: schema.schemaRevision, collectionId, itemId: targetItemId, locale, revision, values });
         await buildSiteImportCmsLocalization(schema, item.published === null ? null : revision(item.published, "public-import"),
-          revision(item.draft, "draft-import"), item.translations);
+          revision(mapped.draft, "draft-import"), item.translations);
       }
       const digest = await siteImportDigest(item);
       cmsEntries.push({ collectionId, itemId, digest });
@@ -254,6 +259,9 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
     }
     const published = publicSource === null ? null : convert(publicSource, firstRevision, "published");
     const draft = convert(draftSource, firstRevision + Number(published !== null), "draft");
+    // 正規化した後の文書（版の番号を除く）と CMS の結び付けが公開版と同じ下書きは、別の版にしない（draft: null は「下書きは公開版」）。
+    const sameDraft = published !== null && await siteImportDigest({ ...published.document, revision: 0 }) === await siteImportDigest({ ...draft.document, revision: 0 })
+      && await siteImportDigest(published.cmsBindings ?? null) === await siteImportDigest(draft.cmsBindings ?? null);
     const pageConnections = connections.get(page.sourceUrl) ?? [];
     const refs = new Set([draft.document, ...(published ? [published.document] : [])].flatMap((document) => walkNodes(document).flatMap(({ node }) =>
       node.type === "component" && node.block === "ManagedEmbed" ? [node.props.refId] : [])));
@@ -261,12 +269,12 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
       fail(`source.pages[${index}]`, "expected a target-scoped connection for each managed embed");
     }
     pages.push({ sourceUrl: page.sourceUrl, path: page.path, locale: page.locale, title: line(page.title ?? draft.document.title, "page.title", 120),
-      visibility: page.visibility, published: published?.document ?? null, draft: draft.document,
+      visibility: page.visibility, published: published?.document ?? null, draft: sameDraft ? null : draft.document,
       ...(published?.cmsBindings ? { publishedCmsBindings: published.cmsBindings } : {}),
-      ...(draft.cmsBindings ? { draftCmsBindings: draft.cmsBindings } : {}),
+      ...(draft.cmsBindings && !sameDraft ? { draftCmsBindings: draft.cmsBindings } : {}),
       ...(pageConnections.length ? { connections: pageConnections } : {}) });
     pageMap.push({ sourceUrl: page.sourceUrl, pageId, locale: page.locale, path: page.path,
-      documentBytes: { published: published?.documentBytes ?? null, draft: draft.documentBytes } });
+      documentBytes: { published: published?.documentBytes ?? null, draft: sameDraft ? null : draft.documentBytes } });
   }
   // 共通の枠（任意）。各言語の header・footer は、ページと同じ素材・リンクの対応で移行先の形に直す。
   let frame;
@@ -380,7 +388,7 @@ export async function applyKamakuraSiteImport(prepared, origin, token, fetcher =
       pageReceipts.push(expected);
       continue;
     }
-    if (item.status !== "imported" || item.draftRevision !== page.draft.revision || item.publishedRevision !== (page.published?.revision ?? null)) {
+    if (item.status !== "imported" || item.draftRevision !== (page.draft ?? page.published).revision || item.publishedRevision !== (page.published?.revision ?? null)) {
       throw new Error("invalid_page_receipt");
     }
     const { version, draftRevision, publishedRevision } = item;

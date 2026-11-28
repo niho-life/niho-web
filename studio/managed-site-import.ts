@@ -143,7 +143,10 @@ async function importPage(scope: Scope, value: unknown) {
   if (input.deferred !== undefined) return archiveDeferredPage(scope, input, { sourceUrl, pageId, locale, path });
   const firstRevision = pageId === "home" ? 2 : 1;
   const publishedRevision = input.published === null ? null : firstRevision;
-  const draftRevision = publishedRevision === null ? firstRevision : firstRevision + 1;
+  // draft: null は「下書きは公開版と同じ」。取り込みの準備で決め、別の版を作らずに公開版を下書きとして指す。
+  const draftIsPublished = input.draft === null;
+  if (draftIsPublished && (publishedRevision === null || input.draftCmsBindings !== undefined)) return { error: "invalid_import" };
+  const draftRevision = publishedRevision === null ? firstRevision : draftIsPublished ? publishedRevision : firstRevision + 1;
   const parseDocument = (raw: unknown, revision: number) => {
     const document = parsePageDocument(raw, managedBlockContracts);
     if (document.siteId !== target.siteId || document.pageId !== pageId || document.locale !== locale || document.revision !== revision) {
@@ -154,7 +157,7 @@ async function importPage(scope: Scope, value: unknown) {
     return document;
   };
   const published = publishedRevision === null ? null : parseDocument(input.published, publishedRevision);
-  const draft = parseDocument(input.draft, draftRevision);
+  const draft = draftIsPublished ? published! : parseDocument(input.draft, draftRevision);
   const cmsSite = plan.cms ? await scope.store.site({ ...target, actor: { id: run.actor_subject, cli: true } }, "cms.schema.apply") : null;
   if (plan.cms && (!cmsSite || await siteImportDigest(cmsSite.state.schema) !== await siteImportDigest(plan.cms.schema))) return conflict();
   const parseBindings = (raw: unknown, document: PageDocument, at: string): CmsPageBindingsDocument | null => {
@@ -167,7 +170,7 @@ async function importPage(scope: Scope, value: unknown) {
   };
   if (published === null && input.publishedCmsBindings != null) return { error: "invalid_import" };
   const publishedBindings = published === null ? null : parseBindings(input.publishedCmsBindings, published, "page.publishedCmsBindings");
-  const draftBindings = parseBindings(input.draftCmsBindings, draft, "page.draftCmsBindings");
+  const draftBindings = draftIsPublished ? publishedBindings : parseBindings(input.draftCmsBindings, draft, "page.draftCmsBindings");
   const refs = new Set([draft, ...(published ? [published] : [])].flatMap((document) => walkNodes(document).flatMap(({ node }) =>
     node.type === "component" && node.block === "ManagedEmbed" ? [node.props.refId] : [])));
   const policy = refs.size ? await db.prepare("SELECT slug, public_policy_json, public_policy_version FROM managed_sites WHERE site_id = ?1")
@@ -204,7 +207,7 @@ async function importPage(scope: Scope, value: unknown) {
   }[] = [
     ...(published ? [{ document: published, version: await draftVersion(run.plan_digest, sourceUrl, published.revision),
       bindingsJson: publishedBindings ? JSON.stringify(publishedBindings) : null }] : []),
-    { document: draft, version, bindingsJson: draftBindings ? JSON.stringify(draftBindings) : null }
+    ...(draftIsPublished ? [] : [{ document: draft, version, bindingsJson: draftBindings ? JSON.stringify(draftBindings) : null }])
   ];
   const sources = [];
   for (const entry of documents) {
@@ -275,7 +278,10 @@ async function importCmsItem(scope: Scope, value: unknown) {
     revision: `rev_${version}_${digest}_${itemId.slice(5, 36)}`, values: parseCmsValues(raw, collection)
   });
   const published = input.published === null ? null : makeRevision(input.published, "published");
-  const draft = makeRevision(input.draft, "draft"), revisions = [...(published ? [published] : []), draft];
+  // draft: null は「下書きは公開版と同じ」（値も訳も同じ）。別の revision を作らない。
+  if (input.draft === null && !published) return { error: "invalid_import" };
+  const draft = input.draft === null ? published! : makeRevision(input.draft, "draft");
+  const revisions = published && draft !== published ? [published, draft] : [draft];
   const assets = new Set(plan.assets.map(({ target: asset }) => assetKey(asset.reference)));
   for (const { reference } of cmsReleaseAssetUses(plan.cms.schema, revisions)) {
     if (reference === null || !assets.has(assetKey(reference))) return { error: "invalid_import" };
@@ -284,13 +290,14 @@ async function importCmsItem(scope: Scope, value: unknown) {
   const publishedLocalizationRevision = translation?.published && published ? published.revision : null;
   const draftLocalizationRevision = translation?.draft ? draft.revision : null;
   const retainedBytes = site.state.retainedBytes + revisions.reduce((total, revision) => total + blobSize(revision), 0)
-    + (translation?.published ? blobSize(translation.published) : 0) + (translation?.draft ? blobSize(translation.draft) : 0);
+    + (translation?.published ? blobSize(translation.published) : 0)
+    + (translation?.draft && draftLocalizationRevision !== publishedLocalizationRevision ? blobSize(translation.draft) : 0);
   if (retainedBytes > MAX_RETAINED_BYTES) return conflict();
   for (const revision of revisions) await store.put(itemBlobKey(target.siteId, plan.locale, revision), revision);
   if (translation?.published && publishedLocalizationRevision) await store.put(localizationBlobKey(target.siteId, translation.targetLocale,
     localizationKey, publishedLocalizationRevision), translation.published);
-  if (translation?.draft && draftLocalizationRevision) await store.put(localizationBlobKey(target.siteId, translation.targetLocale,
-    localizationKey, draftLocalizationRevision), translation.draft);
+  if (translation?.draft && draftLocalizationRevision && draftLocalizationRevision !== publishedLocalizationRevision) await store.put(
+    localizationBlobKey(target.siteId, translation.targetLocale, localizationKey, draftLocalizationRevision), translation.draft);
   const state: CmsState = { ...site.state, retainedBytes, items: { ...site.state.items,
     [itemKey]: { collectionId, itemId, revision: draft.revision, updatedAt: dateNow(), removedAt: null }
   }, ...(translation?.draft && draftLocalizationRevision ? { localizations: { ...site.state.localizations,
