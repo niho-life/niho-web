@@ -3,6 +3,7 @@ import { parsePageDocument, type PageDocument, type PageNode } from "../src/core
 import { createBlankEmbedRegistry } from "../src/embeds.js";
 import { managedVerificationTags, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
 import type { SiteStyles } from "../src/site-styles.js";
+import { composeSiteFrame } from "../src/site-frame.js";
 import { renderPageHead, resolvePageMetadata, validatePagePath, type PageMetadata } from "../src/pages.js";
 import type { CmsPublicAsset, CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
@@ -313,15 +314,17 @@ export async function prepareManagedPagePublicationBatch(input: {
             })
             : document;
           if (!projected) continue;
+          // 共通の枠は CMS の結び付けを解決した後の本文を包む。以降の素材・CSP・SEO 検査は枠も含めて走る。
+          const framed = composeSiteFrame(projected, siteStyles.frame);
           const publicPath = `${publicPrefix}${path}`;
-          const embeds = await resolvePublishedEmbeds(store.db, projected, {
+          const embeds = await resolvePublishedEmbeds(store.db, framed, {
             siteId: projected.siteId, pageId: projected.pageId, locale: projected.locale, parentOrigin: origin, publicPath
           }, policy);
-          const assets = new Map((await store.migratedPublicAssets(projected.siteId, uniqueAssetReferences(projected)))
+          const assets = new Map((await store.migratedPublicAssets(projected.siteId, uniqueAssetReferences(framed)))
             .map((asset) => [assetKey(asset.reference), asset] as const));
           for (const asset of snapshot?.assetManifest ?? []) assets.set(assetKey(asset.reference), asset);
           const canonicalPath = /[A-Z]/u.test(path) ? path.toLowerCase() : path;
-          const rendered = await renderManagedPage({ db: store.db, store, document: projected, policy, origin, prefix: publicPrefix,
+          const rendered = await renderManagedPage({ db: store.db, store, document: framed, policy, origin, prefix: publicPrefix,
             path: canonicalPath, alternatePath: path, publicPath, siteName, embeds, assets: [...assets.values()],
             siteStyles, alternatePages, replacedPages: input.replacePages });
           const previousPath = target.previousPath === undefined ? path : target.previousPath + path.slice(target.path.length);

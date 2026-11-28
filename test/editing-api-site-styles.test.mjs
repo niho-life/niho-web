@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createPageEditingApi } from "@niho/web/editing-api";
 import { createEditingApiSiteSettingsFacade, createPageEditingApiClient, EditingApiClientError } from "@niho/web/editing-client";
-import { parseSiteStyles, resolvePageStyles } from "@niho/web/core";
+import { parseSiteStyles, parseSiteStylesWithFrame, resolvePageStyles } from "@niho/web/core";
+import { siteStylesEdits } from "../dist/editing-site-styles.js";
 
 const sourceDocument = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const siteId = sourceDocument.siteId;
@@ -224,6 +225,41 @@ test("GUI site settings delegates its style diff to site.styles.edit", async () 
     settings: { title: "Demo", locale: "ja", tokens: { brand: newBrand } } });
   assert.equal(result.status, "saved");
   assert.deepEqual(edits, [{ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] }]);
+});
+
+test("GUI site settings neither shows nor removes the shared frame", async () => {
+  const frame = { ja: { header: [{ type: "element", id: "head", tag: "header", children: [{ type: "text", text: "共通" }] }], footer: [] } };
+  const edits = [];
+  const facade = createEditingApiSiteSettingsFacade({
+    async readSiteStyles() { return { draft: { version: "draft-1", styles: { tokens: { brand: oldBrand }, frame } }, published: { version: "published-1", styles: { frame } } }; },
+    async editSiteStyles(input) { edits.push(structuredClone(input)); return { status: "saved", version: "draft-2", styles: { tokens: { brand: newBrand }, frame } }; }
+  }, siteId, { title: "Demo", locale: "ja" });
+  const current = await facade.readSiteSettings(siteId);
+  assert.equal("frame" in current.settings, false);
+  assert.equal("frame" in current.publishedStyles, false);
+  await facade.saveSiteSettings({ siteId, expectedVersion: current.version, previousStyles: { tokens: { brand: oldBrand } },
+    settings: { title: "Demo", locale: "ja", tokens: { brand: newBrand } } });
+  assert.deepEqual(edits, [{ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] }]);
+});
+
+test("siteStylesEdits replaces or removes a locale's frame and rejects an unsafe frame", () => {
+  const header = [{ type: "element", id: "head", tag: "header", children: [{ type: "text", text: "共通" }] }];
+  const before = { frame: { ja: { header, footer: [] }, en: { header, footer: [] } } };
+  const after = { frame: { ja: { header: [], footer: header } } };
+  assert.deepEqual(siteStylesEdits(before, after), [
+    { type: "frame", locale: "ja", value: { header: [], footer: header } },
+    { type: "frame", locale: "en", value: null }
+  ]);
+  assert.deepEqual(siteStylesEdits(before, before), []);
+  assert.throws(() => parseSiteStylesWithFrame({ frame: { ja: { header: [{ type: "element", id: "x", tag: "script", children: [] }], footer: [] } } }));
+  assert.throws(() => parseSiteStylesWithFrame({ frame: { ja: { header: [], footer: [], extra: 1 } } }));
+  assert.deepEqual(parseSiteStyles({ tokens: { brand: oldBrand }, frame: before.frame }), { tokens: { brand: oldBrand } });
+});
+
+test("a carousel in the shared frame is rejected because it references node IDs", () => {
+  const slide = (id) => ({ type: "element", id, tag: "div", children: [{ type: "text", text: id }] });
+  const header = [{ type: "element", id: "slides", tag: "div", interaction: { type: "carousel", binding: { slideIds: ["one", "two"] } }, children: [slide("one"), slide("two")] }];
+  assert.throws(() => parseSiteStylesWithFrame({ frame: { ja: { header, footer: [] } } }), /carousel is not allowed in the shared frame/u);
 });
 
 test("GUI style rename is sent as one explicit edit and publish uses the shared pointer", async () => {

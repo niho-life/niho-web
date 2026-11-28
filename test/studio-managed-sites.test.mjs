@@ -3380,6 +3380,26 @@ testWithD1("Studio CLI file sync pulls, pushes and publishes through the Studio 
   assert.deepEqual(last().result.conflicts.map(({ path }) => path), ["pages/ja/home.json"]);
   assert.deepEqual(last().result.saved, []);
   assert.equal(await readFile(join(dir, "pages/ja/home.json"), "utf8"), before);
+
+  // 6. a shared frame lives in site/styles.json: push it, then publish --changed wraps the public pages
+  const styles = await readFileJson("site/styles.json");
+  assert.equal(styles.frame, undefined);
+  await writeFileJson("site/styles.json", { ...styles, frame: { ja: { header: [], footer: [{ type: "element", id: "sync-footer", tag: "footer",
+    children: [{ type: "text", text: "ファイルで足した共通フッター" }] }] } } });
+  await runPush(dir, deps);
+  assert.ok(last().result.saved.includes("site/styles.json"), JSON.stringify(last().result));
+  const pendingFrame = await client.readPublicationChanges();
+  assert.deepEqual(pendingFrame.changes.filter(({ kind }) => kind === "shared").map(({ id }) => id), ["site-styles"]);
+  assert.equal((await client.publishSiteNow(pendingFrame.version, "changed")).status, "released");
+  assert.match(await (await publicFetch("/")).text(), /nwframe-root[\s\S]*ファイルで足した共通フッター/u);
+  // フッターの文を直して push すると、同じ枠の置き換えになる
+  const pulled = await readFileJson("site/styles.json");
+  pulled.frame.ja.footer[0].children[0].text = "直した共通フッター";
+  await writeFileJson("site/styles.json", pulled);
+  await runPush(dir, deps);
+  assert.ok(last().result.saved.includes("site/styles.json"));
+  assert.equal((await client.publishSiteNow((await client.readPublicationChanges()).version, "changed")).status, "released");
+  assert.match(await (await publicFetch("/")).text(), /直した共通フッター/u);
 });
 
 testWithD1("Studio list page and bound detail share a path through detail.basePath, and moving it moves the item URLs", async (t) => {
@@ -3482,4 +3502,180 @@ testWithD1("Kamakura import accepts a list page at the path of a detail basePath
   const rows = h.sqlite.prepare("SELECT page.path, version.bindings_json FROM managed_pages AS page JOIN managed_page_versions AS version ON version.site_id = page.site_id AND version.page_id = page.page_id AND version.locale = page.locale AND version.revision = page.current_revision WHERE page.site_id = ? ORDER BY page.path").all(site.siteId);
   assert.deepEqual(rows.map(({ path }) => path), ["/", "/migration-detail-posts", "/posts"]);
   assert.equal(JSON.parse(rows[1].bindings_json).detail.basePath, "/posts");
+});
+
+const frameElement = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
+const frameText = (text) => [{ type: "text", text }];
+const jaFrame = () => ({ header: [frameElement("site-header", "header", [
+  frameElement("site-logo", "img", [], { src: "https://img.example.test/logo.png", alt: "ロゴ" }),
+  frameElement("site-menu", "a", frameText("メニュー"), { href: "/menu" })])],
+footer: [frameElement("site-footer", "footer", frameText("共通フッター"))] });
+const nodeIds = (html) => [...new JSDOM(html).window.document.querySelectorAll("[data-nw-node]")].map((node) => node.getAttribute("data-nw-node"));
+
+testWithD1("a shared frame wraps fixed, bound detail and English-less pages once the site styles are published", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "frame-site");
+  const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
+  const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
+  const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, operations + path, input);
+  const lookup = (path) => h.send(PUBLIC_ORIGIN, "GET", "/s/frame-site" + path, undefined, { auth: false, headers: { "Cache-Control": "no-cache" } });
+  const changes = () => admin("GET", "site.publication-changes").then((response) => body(response, 200));
+  const publishChanged = async () => body(await admin("POST", "site.publish", { expectedVersion: (await changes()).version, scope: "changed" }), 200);
+  await setFixturePublicPolicy(h, site, { frameOrigins: [], resourceOrigins: ["https://img.example.test"] });
+  const schema = await site.read("cms.schema.read");
+  const items = [];
+  for (let number = 1; number <= 2; number++) {
+    items.push((await site.read("cms.items.save", { ...versioned(await createDraft(site, schema.schemaRevision)), values: values("Article " + number, "article-" + number) }, { headers: headers() })).item);
+  }
+  await site.read("cms.release.apply", await releasePlan(site, schema.schemaRevision, null, items));
+  await h.cron();
+  const { page: detailPage } = await pageChange(browser, { action: "create", siteId: site.siteId, locale: "ja", title: "Detail", path: "/article-detail" });
+  const detail = await body(await browser("GET", "/" + detailPage.pageId), 200);
+  await body(await browser("PUT", "/" + detailPage.pageId + "/draft", { expectedVersion: detail.version,
+    document: { ...detail.document, body: [frameElement("article-title", "h1", frameText("Title"))] },
+    cmsBindings: { schemaVersion: 1, siteId: site.siteId, pageId: detailPage.pageId, locale: "ja", lists: [],
+      detail: { collectionId: "posts", slugFieldId: "slug", basePath: "/articles", fields: [{ nodeId: "article-title", fieldId: "title", target: "text" }] } } }), 200);
+  const { page: english } = await pageChange(browser, { action: "create", siteId: site.siteId, locale: "en", title: "English", path: "/en" });
+  const englishDraft = await body(await browser("GET", `/${english.pageId}?locale=en`), 200);
+  await body(await browser("PUT", `/${english.pageId}/draft?locale=en`, { expectedVersion: englishDraft.version,
+    document: { ...englishDraft.document, body: [frameElement("english-heading", "h1", frameText("English page"))] } }), 200);
+  const home = await body(await browser("GET", "/home"), 200);
+  await body(await browser("PUT", "/home/draft", { expectedVersion: home.version,
+    document: { ...home.document, body: [frameElement("site-header", "h1", frameText("ページの見出し"))] } }), 200);
+  assert.equal((await publishChanged()).status, "released");
+  const paths = ["/", "/articles/article-1", "/en"];
+  const before = {};
+  for (const path of paths) {
+    const response = await lookup(path);
+    assert.equal(response.status, 200, path);
+    before[path] = await response.text();
+    assert.doesNotMatch(before[path], /nwframe/u, "a site without a frame renders as before");
+  }
+
+  // ja の枠だけを保存する。公開するまでは公開 HTML が変わらず、未公開の変更に共通設定として出る。
+  const stylesPath = operations + "site.styles";
+  const initial = await body(await h.send(MANAGEMENT_ORIGIN, "GET", stylesPath + ".read"), 200);
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", stylesPath + ".edit",
+    { expectedVersion: initial.draft.version, edits: [{ type: "frame", locale: "ja", value: jaFrame() }] }), 200);
+  assert.equal(saved.status, "saved", JSON.stringify(saved));
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "PUT", stylesPath + ".edit",
+    { expectedVersion: saved.version, edits: [{ type: "frame", locale: "ja", value: { header: [frameElement("bad", "script", [])], footer: [] } }] })).status >= 400, true);
+  const pending = await changes();
+  assert.deepEqual(pending.changes.filter(({ kind }) => kind === "shared").map(({ id, label }) => ({ id, label })),
+    [{ id: "site-styles", label: "サイト共通スタイルと共通の枠" }]);
+  assert.equal(await (await lookup("/")).text(), before["/"]);
+  assert.equal((await publishChanged()).status, "released");
+  assert.deepEqual((await changes()).changes, []);
+
+  for (const path of ["/", "/articles/article-1"]) {
+    const response = await lookup(path), html = await response.text();
+    assert.equal(response.status, 200, path);
+    const document = new JSDOM(html).window.document;
+    const root = document.querySelector('[data-nw-node="nwframe-root"]');
+    assert.ok(root, path);
+    assert.deepEqual([...root.children].map((child) => child.getAttribute("data-nw-node")), ["nwframe-h-site-header", "nwframe-main", "nwframe-f-site-footer"]);
+    assert.equal(root.querySelector("main")?.getAttribute("data-nw-node"), "nwframe-main");
+    assert.match(document.querySelector('[data-nw-node="nwframe-f-site-footer"]').textContent, /共通フッター/u);
+    assert.match(root.querySelector("main").textContent, path === "/" ? /ページの見出し/u : /Article 1/u);
+    assert.equal(document.querySelector('[data-nw-node="nwframe-h-site-menu"]').getAttribute("href"), "/s/frame-site/menu");
+    const ids = nodeIds(html);
+    assert.equal(new Set(ids).size, ids.length, `${path} has no duplicate node IDs`);
+    if (path === "/") assert.ok(ids.includes("site-header"), "the page's own node keeps its ID next to the frame's prefixed one");
+    assert.match(response.headers.get("Content-Security-Policy"), /img\.example\.test/u);
+  }
+  assert.equal(await (await lookup("/en")).text(), before["/en"], "a locale without a frame is not wrapped");
+
+  // 英語の枠を足すと英語のページも包まれる。GUI のスタイル編集は枠を消さない。
+  const afterJa = await body(await h.send(MANAGEMENT_ORIGIN, "GET", stylesPath + ".read"), 200);
+  assert.deepEqual(afterJa.published.styles.frame.ja.header.length, 1);
+  const tokenSaved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", stylesPath + ".edit", { expectedVersion: afterJa.draft.version,
+    edits: [{ type: "set", styleKind: "token", name: "brand", value: { type: "color", value: "#0055aa" } }] }), 200);
+  assert.deepEqual((await body(await h.send(MANAGEMENT_ORIGIN, "GET", stylesPath + ".read"), 200)).draft.styles.frame, afterJa.draft.styles.frame);
+  // 大きさ: 日英それぞれ 150 KB 超の枠（合計で従来の 256 KB を超える）を保存できる。
+  const big = (label) => ({ header: Array.from({ length: 1200 }, (_, index) => frameElement(`${label}-${index}`, "p", frameText("あ".repeat(40)))), footer: [] });
+  const sized = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", stylesPath + ".edit", { expectedVersion: tokenSaved.version,
+    edits: [{ type: "frame", locale: "ja", value: big("ja") }, { type: "frame", locale: "en", value: big("en") }] }), 200);
+  assert.equal(sized.status, "saved", JSON.stringify(sized).slice(0, 300));
+  assert.ok(Buffer.byteLength(JSON.stringify(sized.styles)) > 256 * 1024);
+  const english2 = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", stylesPath + ".edit", { expectedVersion: sized.version,
+    edits: [{ type: "frame", locale: "ja", value: jaFrame() }, { type: "frame", locale: "en", value: { header: [frameElement("en-header", "header", frameText("English header"))], footer: [] } }] }), 200);
+  assert.equal(english2.status, "saved");
+  assert.equal((await publishChanged()).status, "released");
+  assert.match(await (await lookup("/en")).text(), /nwframe-root[\s\S]*English header[\s\S]*English page/u);
+});
+
+async function importWithFrame(t, { cms }) {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, cms ? "frame-import-cms" : "frame-import");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = await site.read("cms.schema.read");
+  const origin = "https://frame-import.example.test", siteId = "frame-source";
+  const document = (pageId, locale, title) => ({ document: { schemaVersion: 1, siteId, pageId, locale, revision: 1, title, tokens: {},
+    body: [frameElement("page-heading", "h1", frameText(title))] } });
+  const source = { formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
+    pages: [
+      { sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public", published: document("home-source", "ja", "ホーム"), draft: document("home-source", "ja", "ホーム") },
+      { sourceUrl: origin + "/about", sourcePageId: "about-source", path: "/about", locale: "ja", visibility: "public", published: document("about-source", "ja", "会社"), draft: document("about-source", "ja", "会社") }
+    ],
+    cms: cms ? { schema: { ...schema, siteId }, items: [] } : null, redirects: [], scheduled: [],
+    frame: { ja: { header: [frameElement("brand", "header", [frameElement("brand-link", "a", frameText("会社"), { href: origin + "/about" })])],
+      footer: [frameElement("copyright", "footer", frameText("共通フッター"))] } } };
+  const bytes = Buffer.from(JSON.stringify(source));
+  const prepared = await prepareKamakuraSiteImport(bytes, createHash("sha256").update(bytes).digest("hex"), target);
+  assert.equal(prepared.plan.frame.ja.header[0].children[0].attrs.href, "/about", "source links in the frame are mapped like the pages'");
+  await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
+  const stylesBefore = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.styles.read"), 200);
+  assert.equal(stylesBefore.draft.version, "initial", "the frame is written when the import is finalized");
+  await finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  const styles = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.styles.read"), 200);
+  assert.equal(styles.draft.version, styles.published.version);
+  assert.notEqual(styles.draft.version, "initial");
+  assert.deepEqual(styles.published.styles.frame, prepared.plan.frame);
+  const pending = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.publication-changes"), 200);
+  assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "POST", operations + "site.publish", { expectedVersion: pending.version, scope: "all" }), 200)).status, "released");
+  for (const [path, heading] of [["/", "ホーム"], ["/about", "会社"]]) {
+    const response = await publishedSiteRequest(new Request(`${target.verificationOrigin}/s/${cms ? "frame-import-cms" : "frame-import"}${path}`, { headers: { "Cache-Control": "no-cache" } }), h.env);
+    assert.equal(response.status, 200, path);
+    const html = await response.text(), root = new JSDOM(html).window.document.querySelector('[data-nw-node="nwframe-root"]');
+    assert.ok(root, path);
+    assert.match(root.textContent, new RegExp(`会社[\\s\\S]*${heading}[\\s\\S]*共通フッター`, "u"));
+  }
+}
+
+testWithD1("Kamakura import writes the shared frame at finalize and the first full publish wraps every page", (t) => importWithFrame(t, { cms: false }));
+testWithD1("Kamakura import with a CMS release also writes the shared frame at finalize", (t) => importWithFrame(t, { cms: true }));
+
+testWithD1("a shared frame resolves its own embed, keeps component IDs apart and does not nest main", async (t) => {
+  const h = await fixture(t);
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Frame embed", slug: "frame-embed", locale: "ja" }), 201);
+  const api = `/api/projects/${projectId}/sites/${siteId}/editor`, publicPath = "/s/frame-embed/";
+  const send = (method, path, value, options) => h.send(MANAGEMENT_ORIGIN, method, path, value, options);
+  await setFixturePublicPolicy(h, { projectId, siteId }, { frameOrigins: ["https://niho.life"], resourceOrigins: [] });
+  const connect = async () => {
+    const payload = { v: 1, flow: "rental", spotId: "example", publicId: "example", launchTokenVersion: 1, parentOrigin: PUBLIC_ORIGIN, allowedPathPrefix: publicPath };
+    const src = `https://niho.life/embed/rental/example?launchToken=${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${"a".repeat(43)}`;
+    return (await body(await send("POST", api + "/home/embed-connection", { src, locale: "ja" }), 201)).refId;
+  };
+  const pageRef = await connect(), frameRef = await connect();
+  const embed = (id, refId) => ({ type: "component", id, block: "ManagedEmbed", props: { refId, background: "white", initialHeight: 400 } });
+  const home = await body(await send("GET", api + "/home"), 200);
+  await body(await send("PUT", api + "/home/draft", { expectedVersion: home.version, document: { ...home.document,
+    body: [frameElement("page-main", "main", [embed("embed", pageRef)])] } }), 200);
+  const operations = `/api/edit/v1/sites/${siteId}/operations/site.styles`;
+  const initial = await body(await send("GET", operations + ".read"), 200);
+  const saved = await body(await send("PUT", operations + ".edit", { expectedVersion: initial.draft.version,
+    edits: [{ type: "frame", locale: "ja", value: { header: [], footer: [embed("embed", frameRef)] } }] }), 200);
+  assert.equal(saved.status, "saved", JSON.stringify(saved));
+  const pending = await body(await send("GET", `/api/edit/v1/sites/${siteId}/operations/site.publication-changes`), 200);
+  assert.equal((await body(await send("POST", `/api/edit/v1/sites/${siteId}/operations/site.publish`, { expectedVersion: pending.version, scope: "changed" }), 200)).status, "released");
+  const response = await publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}${publicPath}`, { headers: { "Cache-Control": "no-cache" } }), h.env);
+  const html = await response.text(), document = new JSDOM(html).window.document;
+  assert.deepEqual([...document.querySelectorAll("[data-managed-embed-ref]")].map((node) => node.getAttribute("data-managed-embed-ref")).sort(), [frameRef, pageRef].sort());
+  assert.match(response.headers.get("Content-Security-Policy"), /https:\/\/niho\.life/u);
+  const ids = nodeIds(html);
+  assert.ok(ids.includes("embed") && ids.includes("nwframe-f-embed"));
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(document.querySelectorAll("main").length, 1, "a page that has its own main is wrapped in a div");
+  assert.equal(document.querySelector('[data-nw-node="nwframe-main"]').tagName, "DIV");
 });

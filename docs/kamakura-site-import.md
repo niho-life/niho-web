@@ -21,6 +21,7 @@ Studio で検証用の新規 Project を作成し、移行元の原文 locale �
 | `cms.items[].translations` | `{ targetLocale, published, draft }`。各版は `null`、または field ID → `{ value, reviewed }`。Studio の CMS 翻訳が対応するテキスト field と `richText` field を指定する。`richText` の `value` は訳した本文の HTML（100,000 文字まで）。`reviewed` は元の対応版で確認済みだった場合に限る |
 | `redirects` | Studio の `{ locale, fromPath, toPath }` の配列。次回公開に使う redirect 正本に取込む |
 | `scheduled` | `{ kind: "page", sourceUrl, at }` または `{ kind: "cms", collectionId, itemId, at }` の配列。`at` は RFC 3339 の日時。元予約の情報を検証用計画へ保持し、公開予約ジョブは作成しない |
+| `frame` | 任意。`{ [locale]: { header, footer, tokens?, textStyles?, layout? } }`。`header` と `footer` は PageDocument の `body` と同じ節点の配列で、共通部品を展開済みにする。素材・リンクはページと同じ対応で移行先へ直す。tokens は枠の中で自己完結にする（`layout` の背景画像に素材は使わない）。取込の確定で、ページの公開版と一緒にサイト共通スタイルの下書きと公開の両方へ書く。サイト共通スタイルを編集済みなら確定は競合になる。契約は [site-styles-contract.md](site-styles-contract.md) |
 
 地図、カレンダー、旧 iframe、カルーセル、フォーム、CMS 一覧・詳細を含む版には、必要な `sourceBlocks`, `presentation`, `replacements`, `frameOrigins` も付ける。`replacement.kind` は `frame`、`carousel`、`managed-embed`、`cms-list`、`cms-detail` が使える。CMS の recipe はエクスポート内の `cms.schema` と同じ collection・field ID を参照し、公開版と下書き版それぞれに指定する。変換不能・レシピ不足・CMS schema 不整合があれば、取り込み全体を確定せず停止する。`cms-detail` の `binding` には、項目 URL の親パス `basePath`（省略可、`/` と `/cms` 配下は不可）を書ける。一覧ページを元のパス（詳細の `basePath` と同じパス）に置いてよい。詳細ページ自身は公開されない内部のパスに置く。CMS bindings は対応する PageDocument 版の `managed_page_versions.bindings_json` に保存する。`richText` field は `target: "rich-text"` で結び付ける（`text` では HTML がそのまま文字で表示される）。[鎌倉専用ブロックの移行](kamakura-block-migration.md)
 

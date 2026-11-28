@@ -164,8 +164,10 @@ export function createEditingApiSiteSettingsFacade(
     async readSiteSettings(requestSiteId, signal) {
       if (requestSiteId !== siteId) throw new TypeError("site mismatch");
       const snapshot = await client.readSiteStyles(signal);
-      return { version: snapshot.draft.version, settings: parseSiteSettings({ ...stableMetadata, ...snapshot.draft.styles }),
-        publishedVersion: snapshot.published.version, publishedStyles: structuredClone(snapshot.published.styles) };
+      // 共通の枠（frame）は GUI のサイト設定の対象外。ここで外し、編集の差分にも出さない。
+      const { frame: _draftFrame, ...draftStyles } = snapshot.draft.styles, { frame: _publishedFrame, ...publishedStyles } = snapshot.published.styles;
+      return { version: snapshot.draft.version, settings: parseSiteSettings({ ...stableMetadata, ...draftStyles }),
+        publishedVersion: snapshot.published.version, publishedStyles: structuredClone(publishedStyles) };
     },
     async saveSiteSettings(request, signal) {
       if (request.siteId !== siteId) throw new TypeError("site mismatch");
