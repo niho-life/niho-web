@@ -1625,7 +1625,9 @@ testWithD1("Kamakura machine editing enforces current site grants for discovery,
 const CMS_OP_KEY = "X-Studio-Operation-Key";
 const headers = (key = crypto.randomUUID()) => ({ [CMS_OP_KEY]: key });
 async function cmsSite(h, slug) {
-  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CMS Fixture", slug, locale: "ja" }), 201);
+  return cmsAt(h, slug, await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CMS Fixture", slug, locale: "ja" }), 201));
+}
+function cmsAt(h, slug, { projectId, siteId }) {
   const endpoint = `/api/projects/${projectId}/sites/${siteId}/cms/v2`;
   const post = (operation, values = {}, options = {}) => h.send(MANAGEMENT_ORIGIN, "POST", `${endpoint}/${operation}`, { siteId, ...values }, options);
   const read = (operation, values = {}, options = {}) => post(operation, values, options).then((result) => body(result, 200));
@@ -3118,14 +3120,159 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal((await publicHtml("/deferred/draft-related")).status, 200);
 });
 
+/** CMS 項目を載せた一覧ページ（home）と固定ページ（notes）を公開した状態を作る。 */
+async function cmsChangedFixture(t, slug) {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, slug);
+  const editor = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
+  const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, editor + path, input, options);
+  const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, operations + path, input);
+  const lookup = (path, init = {}) => h.fetch(`${PUBLIC_ORIGIN}/s/${slug}${path}`, { ...init, headers: { "Cache-Control": "no-cache" } });
+  const changes = () => admin("GET", "site.publication-changes").then((response) => body(response, 200));
+  const publishChanged = async (expectedVersion) => admin("POST", "site.publish", { expectedVersion: expectedVersion ?? (await changes()).version, scope: "changed" });
+  const history = () => browser("GET", "/publication-history").then((response) => body(response, 200));
+  const { schemaRevision } = await site.read("cms.schema.read");
+  const first = await saveDraft(site, await createDraft(site, schemaRevision), "First post", "first");
+  const second = await saveDraft(site, await createDraft(site, schemaRevision), "Second post", "second");
+  await site.read("cms.release.apply", await releasePlan(site, schemaRevision, null, [first, second]));
+  await h.cron();
+  const element = (id, tag, children) => ({ type: "element", id, tag, children });
+  const text = (value) => [{ type: "text", text: value }];
+  const home = await body(await browser("GET", "/home"), 200);
+  const cmsBindings = { schemaVersion: 1, siteId: site.siteId, pageId: "home", locale: "ja", lists: [{ templateNodeId: "post-item", collectionId: "posts", limit: 6,
+    fields: [{ nodeId: "post-title", fieldId: "title", target: "text" }] }] };
+  await body(await browser("PUT", "/home/draft", { expectedVersion: home.version, cmsBindings,
+    document: { ...home.document, body: [element("post-item", "article", [element("post-title", "h2", text("Placeholder"))])] } }), 200);
+  const { page: notes } = await pageChange(browser, { action: "create", siteId: site.siteId, locale: "ja", title: "Notes", path: "/notes" });
+  const heading = async (text) => {
+    const page = await body(await admin("GET", `pages.read/${notes.pageId}?locale=ja`), 200);
+    await body(await admin("PUT", `pages.save/${notes.pageId}?locale=ja`, { expectedVersion: page.version,
+      document: { ...page.document, body: [element("notes-heading", "h1", [{ type: "text", text }])] } }), 200);
+  };
+  await heading("Notes published");
+  const initial = await body(await publishChanged(), 200);
+  assert.equal(initial.status, "released", JSON.stringify(initial));
+  const outbox = () => h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_outbox WHERE site_id = ?").get(site.siteId).count;
+  const releases = () => h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_releases WHERE site_id = ?").get(site.siteId).count;
+  const pointer = () => h.sqlite.prepare("SELECT version FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).version;
+  return { h, site, schemaRevision, first, second, notes, admin, lookup, changes, publishChanged, history, heading, outbox, releases, pointer };
+}
+
+testWithD1("publish --changed releases CMS items with the pages in one switch", async (t) => {
+  const f = await cmsChangedFixture(t, "cms-changed");
+  const { h, site, schemaRevision, lookup } = f;
+  assert.match(await (await lookup("/")).text(), /First post[\s\S]*Second post|Second post[\s\S]*First post/u);
+  assert.deepEqual((await f.changes()).changes, []);
+
+  const first = (await site.read("cms.items.save", { ...versioned(f.first), values: values("First post v2", "first") }, { headers: headers() })).item;
+  const second = (await site.read("cms.items.save", { ...versioned(f.second), values: values("Second post moved", "second-moved") }, { headers: headers() })).item;
+  const third = await saveDraft(site, await createDraft(site, schemaRevision), "Third post", "third");
+  await f.heading("Notes draft");
+  const pending = await f.changes();
+  assert.deepEqual(pending.changes.filter(({ kind }) => kind === "cms").map(({ target, title, path, reason }) => ({ ...target, title, path, reason }))
+    .sort((left, right) => left.title < right.title ? -1 : 1), [
+    { siteId: site.siteId, collectionId: "posts", itemId: first.itemId, locale: "ja", title: "First post v2", path: "/cms/posts/first", reason: "draft" },
+    { siteId: site.siteId, collectionId: "posts", itemId: second.itemId, locale: "ja", title: "Second post moved", path: "/cms/posts/second-moved", reason: "draft" },
+    { siteId: site.siteId, collectionId: "posts", itemId: third.itemId, locale: "ja", title: "Third post", path: "/cms/posts/third", reason: "new" }
+  ]);
+  assert.equal(pending.changes.filter(({ kind }) => kind === "page").length, 1);
+  // The old public pages stay until the single switch.
+  assert.doesNotMatch(await (await lookup("/")).text(), /Third post/u);
+  assert.equal((await lookup("/cms/posts/third")).status, 404);
+
+  const releasesBefore = (await f.history()).releases.length, ledgerBefore = f.releases(), outboxBefore = f.outbox();
+  const before = (await site.read("cms.release.current")).snapshot.releaseId;
+  const released = await body(await f.publishChanged(pending.version), 200);
+  assert.equal(released.status, "released", JSON.stringify(released));
+  assert.ok(released.urls.some((url) => url.endsWith("/cms/posts/third")));
+  assert.equal((await f.history()).releases.length, releasesBefore + 1);
+  assert.equal(f.releases(), ledgerBefore + 1);
+  assert.equal(f.outbox(), outboxBefore, "no CMS job can publish the items again later");
+  const current = (await site.read("cms.release.current")).snapshot;
+  assert.notEqual(current.releaseId, before);
+  assert.deepEqual(current.items.map(pin).sort((left, right) => left.itemId < right.itemId ? -1 : 1),
+    [pin(first), pin(second), pin(third)].sort((left, right) => left.itemId < right.itemId ? -1 : 1));
+
+  const detail = await lookup("/cms/posts/first");
+  assert.equal(detail.status, 200);
+  assert.match(await detail.text(), /First post v2/u);
+  assert.equal((await lookup("/cms/posts/third")).status, 200);
+  const list = await (await lookup("/")).text();
+  for (const title of ["First post v2", "Second post moved", "Third post"]) assert.match(list, new RegExp(title, "u"));
+  assert.match(await (await lookup("/notes")).text(), /Notes draft/u);
+  const moved = await lookup("/cms/posts/second", { redirect: "manual" });
+  assert.equal(moved.status, 301);
+  assert.match(moved.headers.get("Location"), /\/s\/cms-changed\/cms\/posts\/second-moved$/u);
+  assert.deepEqual((await f.changes()).changes, []);
+  assert.equal((await f.publishChanged(pending.version)).status, 409, "the same expected version cannot be replayed");
+  assert.equal((await f.history()).releases.length, releasesBefore + 1);
+  assert.equal(h.sqlite.prepare("SELECT cms_release_id FROM managed_page_publications WHERE site_id = ? AND page_id = 'home' ORDER BY created_at DESC, rowid DESC LIMIT 1")
+    .get(site.siteId).cms_release_id, current.releaseId, "the list page records the new CMS release");
+});
+
+testWithD1("publish --changed leaves CMS items out while a CMS release is waiting", async (t) => {
+  const f = await cmsChangedFixture(t, "cms-waiting");
+  const { site, schemaRevision, lookup } = f;
+  const current = (await site.read("cms.release.current")).snapshot;
+  const first = (await site.read("cms.items.save", { ...versioned(f.first), values: values("First scheduled", "first") }, { headers: headers() })).item;
+  const future = new Date(Date.now() + 3_600_000).toISOString();
+  const { result: { scheduleId } } = await site.read("cms.schedule.create",
+    await releasePlan(site, schemaRevision, current.releaseId, [first, f.second], future));
+  await f.heading("Notes while scheduled");
+  const third = await saveDraft(site, await createDraft(site, schemaRevision), "Third waits", "third");
+  const pending = await f.changes();
+  assert.deepEqual(pending.changes.map(({ kind }) => kind), ["page"], "CMS drafts are hidden until the schedule is gone");
+  const released = await body(await f.publishChanged(pending.version), 200);
+  assert.equal(released.status, "released", JSON.stringify(released));
+  assert.match(await (await lookup("/notes")).text(), /Notes while scheduled/u);
+  assert.equal((await lookup("/cms/posts/third")).status, 404);
+  assert.equal((await site.read("cms.schedule.status", { scheduleId })).status, "scheduled");
+  assert.equal((await site.read("cms.release.current")).snapshot.releaseId, current.releaseId);
+
+  await site.read("cms.schedule.cancel", { scheduleId }, { headers: headers() });
+  const after = await f.changes();
+  assert.equal(after.changes.filter(({ kind }) => kind === "cms").length, 2, "cancelling the schedule lists the drafts again");
+  assert.equal(after.changes.some(({ target }) => target?.itemId === third.itemId), true);
+});
+
+testWithD1("publish --changed switches nothing when a CMS item cannot be planned", async (t) => {
+  const f = await cmsChangedFixture(t, "cms-blocked");
+  const { h, site, schemaRevision, lookup } = f;
+  // A second item with the slug of a published item makes the release plan invalid.
+  const clash = await saveDraft(site, await createDraft(site, schemaRevision), "Clash", "first");
+  await f.heading("Notes must stay old");
+  const pending = await f.changes();
+  assert.ok(pending.changes.some(({ kind, target }) => kind === "cms" && target.itemId === clash.itemId));
+  const stateBefore = h.sqlite.prepare("SELECT generation, state_json FROM managed_cms_state WHERE site_id = ?").get(site.siteId);
+  const pointerBefore = f.pointer(), releasesBefore = (await f.history()).releases.length, ledgerBefore = f.releases();
+  const homeBefore = await (await lookup("/")).text();
+  const failed = await body(await f.publishChanged(pending.version), 200);
+  assert.equal(failed.status, "failed");
+  assert.match(failed.message, /CMS 項目を公開できません/u);
+  assert.match(failed.failedUrl, /\/cms\/posts\/first$/u);
+  assert.equal(f.pointer(), pointerBefore);
+  assert.deepEqual(h.sqlite.prepare("SELECT generation, state_json FROM managed_cms_state WHERE site_id = ?").get(site.siteId), stateBefore);
+  assert.equal(f.releases(), ledgerBefore);
+  assert.equal((await f.history()).releases.length, releasesBefore);
+  assert.equal(await (await lookup("/")).text(), homeBefore);
+  assert.match(await (await lookup("/notes")).text(), /Notes published/u);
+});
+
 testWithD1("Studio CLI file sync pulls, pushes and publishes through the Studio worker", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "File sync", slug: "file-sync", locale: "ja" }), 201);
   const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
   const grant = h.sqlite.prepare("INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject) VALUES (?, ?, ?, ?, ?)");
-  for (const capability of ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit"]) {
+  for (const capability of ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish"]) {
     grant.run(SERVICE_CLIENT, site.projectId, site.siteId, capability, OWNER);
   }
+  // 公開済みの CMS 項目を1つ用意し、ファイルから直して一括公開できることを確かめる。
+  const cms = cmsAt(h, "file-sync", site);
+  const { schemaRevision } = await cms.read("cms.schema.read");
+  const post = await saveDraft(cms, await createDraft(cms, schemaRevision), "同期前の記事", "sync-post");
+  await cms.read("cms.release.apply", await releasePlan(cms, schemaRevision, null, [post]));
+  await h.cron();
   const publicFetch = (path, init = {}) => h.fetch(`${PUBLIC_ORIGIN}/s/file-sync${path}`, { ...init, headers: { "Cache-Control": "no-cache" } });
   const withHeading = async (text) => {
     const home = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
@@ -3186,17 +3333,30 @@ testWithD1("Studio CLI file sync pulls, pushes and publishes through the Studio 
   const redirects = await readFileJson("site/redirects.json");
   redirects.push({ locale: "ja", fromPath: "/legacy", toPath: "/" });
   await writeFileJson("site/redirects.json", redirects);
+  const cmsPath = `cms/posts/${post.itemId}.json`;
+  assert.ok(files.includes(cmsPath), "the published CMS item is pulled");
+  const cmsValues = await readFileJson(cmsPath);
+  assert.equal(cmsValues.title, "同期前の記事");
+  await writeFileJson(cmsPath, { ...cmsValues, title: "ファイルで直した記事" });
   await runPush(dir, deps);
   assert.equal(last().code, 0, JSON.stringify(last().result));
-  assert.deepEqual([...last().result.saved].sort(), ["pages/ja/home.json", "site/redirects.json", "site/seo.json"]);
+  assert.deepEqual([...last().result.saved].sort(), [cmsPath, "pages/ja/home.json", "site/redirects.json", "site/seo.json"]);
 
-  // 3. publish the pending changes
+  // 3. publish the pending changes. CMS items are listed only for a client that may publish them.
+  const revokeCmsPublish = h.sqlite.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND site_id = ? AND capability = 'cms.publish'");
+  revokeCmsPublish.run(SERVICE_CLIENT, site.siteId);
+  assert.equal((await client.readPublicationChanges()).changes.some(({ kind }) => kind === "cms"), false);
+  grant.run(SERVICE_CLIENT, site.projectId, site.siteId, "cms.publish", OWNER);
   const pending = await client.readPublicationChanges();
+  assert.deepEqual(pending.changes.filter(({ kind }) => kind === "cms").map(({ target, title, path, reason }) => ({ itemId: target.itemId, title, path, reason })),
+    [{ itemId: post.itemId, title: "ファイルで直した記事", path: "/cms/posts/sync-post", reason: "draft" }]);
   const released = await client.publishSiteNow(pending.version, "changed");
   assert.equal(released.status, "released", JSON.stringify(released));
   const html = await (await publicFetch("/")).text();
   assert.match(html, /変更後の見出し/u);
   assert.match(html, /ファイル同期で変えた説明/u);
+  assert.match(await (await publicFetch("/cms/posts/sync-post")).text(), /ファイルで直した記事/u);
+  assert.equal((await client.readPublicationChanges()).changes.some(({ kind }) => kind === "cms"), false);
   const legacy = await publicFetch("/legacy", { redirect: "manual" });
   assert.equal(legacy.status, 301);
   assert.match(legacy.headers.get("Location"), /\/s\/file-sync\/?$/u);

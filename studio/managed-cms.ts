@@ -22,7 +22,7 @@ import {
   CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RELEASE_BODY, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
   iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
-import { collectionPath, deliverCmsJob, escapeHtml, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
+import { collectionPath, deliverCmsJob, escapeHtml, planCmsDraftRelease, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
 import { cmsLocalizedSchema, cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, cmsLocalizationTargetLocale, type CmsLocalizationView } from "./managed-cms-localization.js";
 import { prepareManagedCmsPublication } from "./managed-sites.js";
 
@@ -767,21 +767,7 @@ async function publishCmsItemOnce(store: CmsStore, site: Site, draft: CmsItemRev
   exact(body, ["expectedVersion", "operationId", ...(Object.hasOwn(body, "redirect") ? ["redirect"] : [])]);
   if (typeof body.expectedVersion !== "string" || body.redirect !== undefined && typeof body.redirect !== "boolean") return invalid();
   if (body.expectedVersion !== draft.revision) return error("version_conflict", 409);
-  const key = cmsItemKey(draft);
-  const before = context.current?.items.find((entry) => cmsItemKey(entry) === key)?.path;
-  const after = item.path;
-  const currentRedirects = (context.current?.redirects ?? []).flatMap((redirect) => {
-    if (redirect.from === after) return [];
-    if (redirect.to === before && before !== after) return body.redirect && after ? [{ from: redirect.from, to: after }] : [];
-    return [redirect];
-  });
-  const redirects = body.redirect && before && after && before !== after ? [...currentRedirects, { from: before, to: after }] : currentRedirects;
-  const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
-    .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
-  const release = await releaseContext(store, site, items);
-  const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
-    routeTableRevision: release.routeTable.revision,
-    expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), release);
+  const ready = await planCmsDraftRelease(store, site, context.current, [{ item: draft, path: item.path }], body.redirect === true);
   if (ready.status === "conflict") return error("version_conflict", 409);
   if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);
   return queueRelease(store, mutation, ready.proposal, null,

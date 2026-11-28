@@ -89,6 +89,8 @@ export type EditingPageTarget = {
 export type EditingPublicationChange =
   | { readonly kind: "page"; readonly target: EditingPageTarget; readonly title: string; readonly path: string;
       readonly reason: "new" | "draft" | "path" | "visibility" }
+  | { readonly kind: "cms"; readonly target: EditingCmsTarget & { readonly locale: string }; readonly title: string; readonly path: string | null;
+      readonly reason: "new" | "draft" }
   | { readonly kind: "shared"; readonly id: string; readonly label: string; readonly appliesToAllPages: true };
 export type EditingPublicationChanges = { readonly version: string; readonly changes: readonly EditingPublicationChange[] };
 export type EditingSitePublicationHistory = {
@@ -418,12 +420,18 @@ const publicationChangeSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze
   Object.freeze({ type: "object", required: Object.freeze(["kind", "target", "title", "path", "reason"]), additionalProperties: false,
     properties: Object.freeze({ kind: Object.freeze({ const: "page" }), target: pageTargetSchema, title: Object.freeze({ type: "string", maxLength: 500 }),
       path: Object.freeze({ type: "string", maxLength: 512 }), reason: Object.freeze({ type: "string", enum: Object.freeze(["new", "draft", "path", "visibility"]) }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["kind", "target", "title", "path", "reason"]), additionalProperties: false,
+    properties: Object.freeze({ kind: Object.freeze({ const: "cms" }),
+      target: Object.freeze({ type: "object", required: Object.freeze(["siteId", "collectionId", "itemId", "locale"]), additionalProperties: false,
+        properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), collectionId: cmsCollectionIdSchema, itemId: cmsItemIdSchema, locale: Object.freeze({ type: "string" }) }) }),
+      title: Object.freeze({ type: "string", maxLength: 500 }), path: Object.freeze({ oneOf: Object.freeze([{ type: "string", maxLength: 512 }, { const: null }]) }),
+      reason: Object.freeze({ type: "string", enum: Object.freeze(["new", "draft"]) }) }) }),
   Object.freeze({ type: "object", required: Object.freeze(["kind", "id", "label", "appliesToAllPages"]), additionalProperties: false,
     properties: Object.freeze({ kind: Object.freeze({ const: "shared" }), id: Object.freeze({ type: "string", maxLength: 80 }),
       label: Object.freeze({ type: "string", maxLength: 200 }), appliesToAllPages: Object.freeze({ const: true }) }) })
 ]) });
 const publicationChangesSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["version", "changes"]), additionalProperties: false,
-  properties: Object.freeze({ version: versionSchema, changes: Object.freeze({ type: "array", maxItems: 503, items: publicationChangeSchema }) }) });
+  properties: Object.freeze({ version: versionSchema, changes: Object.freeze({ type: "array", maxItems: 1003, items: publicationChangeSchema }) }) });
 const publicationHistoryEntrySchema: JsonSchema = Object.freeze({
   type: "object", additionalProperties: true,
   required: Object.freeze(["releaseId", "createdAt", "actorName", "changedPaths", "changedPathCount", "current"]),
@@ -1436,7 +1444,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         catch { return fail("host_failure", 503); }
         if (result === null) return fail("not_found", 404);
         if (!result || !exactKeys(result as unknown as Record<string, unknown>, ["version", "changes"])
-          || !validVersion(result.version) || !Array.isArray(result.changes) || result.changes.length > 503) return fail("host_contract_violation", 502);
+          || !validVersion(result.version) || !Array.isArray(result.changes) || result.changes.length > 1003) return fail("host_contract_violation", 502);
         for (const change of result.changes) {
           if (!change || typeof change !== "object") return fail("host_contract_violation", 502);
           if (change.kind === "page") {
@@ -1445,6 +1453,15 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
               || !target || target.siteId !== siteId || typeof change.title !== "string" || change.title.length > 500
               || typeof change.path !== "string" || change.path.length > 512
               || !["new", "draft", "path", "visibility"].includes(change.reason)) return fail("host_contract_violation", 502);
+          } else if (change.kind === "cms") {
+            const target = change.target as Record<string, unknown> | undefined;
+            const cms = target && typeof target === "object" && exactKeys(target, ["siteId", "collectionId", "itemId", "locale"])
+              ? cmsTarget(siteId, target.collectionId, target.itemId) : null;
+            if (!exactKeys(change as unknown as Record<string, unknown>, ["kind", "target", "title", "path", "reason"])
+              || !cms || target!.siteId !== siteId || !pageTarget(siteId, "page", target!.locale)
+              || typeof change.title !== "string" || change.title.length > 500
+              || change.path !== null && (typeof change.path !== "string" || change.path.length > 512)
+              || !["new", "draft"].includes(change.reason)) return fail("host_contract_violation", 502);
           } else if (change.kind === "shared") {
             if (!exactKeys(change as unknown as Record<string, unknown>, ["kind", "id", "label", "appliesToAllPages"])
               || typeof change.id !== "string" || change.id.length > 80 || typeof change.label !== "string" || change.label.length > 200

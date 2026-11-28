@@ -57,6 +57,8 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 | `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
 | `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
 
+`site.publication-changes` の `changes` の各項目は `kind` で区別します。`page` は `{ target, title, path, reason }`（`reason` は `new`・`draft`・`path`・`visibility`）、`shared` は `{ id, label, appliesToAllPages: true }`、`cms` は `{ target: { siteId, collectionId, itemId, locale }, title, path, reason }` です。`cms` の `path` は詳細 URL が無い項目では `null`、`reason` は `new`・`draft` です。`site.publish` の `scope: "changed"` は一覧の全件を公開し、`cms` の項目は CMS の release と同じ公開目録の切り替えで公開します。ホストは CMS の公開権限を持つ actor にだけ `cms` を返します。
+
 `createPageEditingApiClient().publishSiteNow()` の成功結果では、`elapsedMs` はclientが呼出しから応答受領までに測った壁時計時間、`serverElapsedMs` はHTTP応答の `elapsedMs` です。Cloudflare Workersでは `Date.now()` と `performance.now()` がI/Oの間だけ進み、CPU処理時間を測れないため、全量公開の判断にはGUI・CLI側の `elapsedMs` を使います。直接HTTPを呼ぶ場合は、呼出し側で操作全体を計測してください（[Cloudflare Workersのtimer仕様](https://developers.cloudflare.com/workers/runtime-apis/performance/)）。
 
 `pages.preview-intent` は、ページ読取権限を持つactorに対してホストが発行する短期プレビューURLです。`PageEditingHostAdapter.createPagePreviewIntent(actor, target)` を実装したhostだけがdiscoveryに公開できます。ホストはURLにbearer token、Access資格情報、cookieなどを含めず、サーバー側の不透明な許可記録をactor・site/page/locale・発行時の文書版・components/presentation/翻訳の依存版・期限・利用回数上限に結び付けます。プレビューHTMLのGET時に認証主体とこれらの版・期限・利用回数を再検証し、一致しない場合は拒否します。CLIは認証header付きでHTMLを一度だけ取得し、幅ごとの撮影には同じメモリ内HTMLを使います。

@@ -101,7 +101,7 @@ niho-edit --studio --origin https://studio.example --site kamakura release home 
 
 ## Studio-native ページの公開と版履歴
 
-ページの「公開」は指定ページの下書きを公開します。どの公開操作でも、選ばれなかったページは公開中の版から作り直します。内容が同じHTMLは既存の生成物を使います。`changes` と `publish --changed` は、Studio GUI と同じ未公開変更一覧を使います。複数ページと共通設定をまとめて生成し、全URLを用意できた後に公開manifestを1回だけ切り替えます。対象ページ以外は公開済みの版から生成し、保存しただけの下書きは混ぜません。
+ページの「公開」は指定ページの下書きを公開します。どの公開操作でも、選ばれなかったページは公開中の版から作り直します。内容が同じHTMLは既存の生成物を使います。`changes` と `publish --changed` は、Studio GUI と同じ未公開変更一覧を使います。複数ページ・共通設定・CMS 項目をまとめて生成し、全URLを用意できた後に公開manifestを1回だけ切り替えます。どれか1つでも生成できなければ、何も切り替えません。対象ページ以外は公開済みの版から生成し、保存しただけの下書きは混ぜません。
 
 ```sh
 niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja --json saved.json
@@ -118,11 +118,11 @@ niho-edit --studio --origin https://studio.example --site site-id pages-catalog
 niho-edit --studio --origin https://studio.example --site site-id page-change --expected-version "$catalog_version" --json new-page.json
 ```
 
-結果は JSON です。ページ単位の `publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`changes` はページ本文・path/visibility・共通設定の未公開変更を返します。`publish --changed` はその全件を一括公開し、`publish --site` は共通設定だけを公開します。複数のページIDを指定すると、指定したページの下書きをまとめて公開します。公開中の版を作り直す `publish --all` はコード変更・移行時の CLI 専用操作です。`site-history` は公開版の日時・実行者・変更URLを返し、`rollback <release-id>` は選んだ公開版へ一度で戻します。古い履歴では実行者や変更URLが未記録の場合があります。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
+結果は JSON です。ページ単位の `publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`changes` はページ本文・path/visibility・共通設定・CMS 項目の未公開変更を返します。CMS 項目は元の言語の項目で、公開中の版と下書きが違うもの（`reason: "draft"`）と未公開のもの（`"new"`）です。公開予約か反映待ちの CMS 公開がある間は、予約を崩さないよう CMS 項目を一覧にも公開にも含めません。`publish --changed` はその全件を一括公開し、CMS 項目は1つの CMS release にまとめ、それを表示する一覧・詳細とページを同じ公開で作り直します。URL を変えた公開済みの CMS 項目は、`cms-publish --redirect true` と同じく旧 URL から新 URL へ転送します。成功後に同じ版で再送すると `version_conflict` になります。`publish --site` は共通設定だけを公開します。複数のページIDを指定すると、指定したページの下書きをまとめて公開します。公開中の版を作り直す `publish --all` はコード変更・移行時の CLI 専用操作です。`site-history` は公開版の日時・実行者・変更URLを返し、`rollback <release-id>` は選んだ公開版へ一度で戻します。古い履歴では実行者や変更URLが未記録の場合があります。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
 
 公開結果の `elapsedMs` と GUI の表示時間は、変更一覧の取得を含む操作側の壁時計時間です。CLI の `serverElapsedMs` はサーバーが返した参考値で、Cloudflare Workers上のtimerはI/O間だけ進むためCPU処理時間を含みません。95 URLの全量公開を15秒以内か判断するときは `elapsedMs` を使います。
 
-版が競合すると HTTP 409 `version_conflict` で終了します。入力ファイルはそのまま使って最新状態と比較できます。機械認証は対象サイトに委任された `pages.publish` grant を使い、読取には対応する読取 grant を使います。
+版が競合すると HTTP 409 `version_conflict` で終了します。入力ファイルはそのまま使って最新状態と比較できます。機械認証は対象サイトに委任された `pages.publish` grant を使い、読取には対応する読取 grant を使います。CMS 項目は `cms.publish` grant があるときだけ一覧と `publish --changed` に含まれます。
 
 ## Studio-native CMS
 

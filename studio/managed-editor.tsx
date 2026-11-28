@@ -206,6 +206,7 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
 }
 
 type PublicationChange = { readonly kind: "page"; readonly title: string; readonly path: string; readonly reason: string }
+  | { readonly kind: "cms"; readonly title: string; readonly path: string | null }
   | { readonly kind: "shared"; readonly label: string; readonly appliesToAllPages: true };
 type PublicationHistoryEntry = { readonly releaseId: string; readonly createdAt: string; readonly actorName: string | null;
   readonly changedPaths: readonly string[] | null; readonly changedPathCount: number | null; readonly current: boolean };
@@ -221,11 +222,13 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
   const endpoint = `/api/edit/v1/sites/${encodeURIComponent(siteId)}/operations`;
   const refresh = async (signal: AbortSignal): Promise<{ readonly version: string; readonly changes: readonly PublicationChange[] }> => {
     const value = record(await api(`${endpoint}/site.publication-changes`, "GET", undefined, signal));
-    if (typeof value.version !== "string" || !Array.isArray(value.changes) || value.changes.length > 503) throw new Error("未公開変更の一覧が正しくありません。");
+    if (typeof value.version !== "string" || !Array.isArray(value.changes) || value.changes.length > 1003) throw new Error("未公開変更の一覧が正しくありません。");
     const next = value.changes.map((raw): PublicationChange => {
       const change = record(raw);
       if (change.kind === "page" && typeof change.title === "string" && typeof change.path === "string" && typeof change.reason === "string")
         return { kind: "page", title: change.title, path: change.path, reason: change.reason };
+      if (change.kind === "cms" && typeof change.title === "string" && (change.path === null || typeof change.path === "string"))
+        return { kind: "cms", title: change.title, path: change.path };
       if (change.kind === "shared" && typeof change.label === "string" && change.appliesToAllPages === true)
         return { kind: "shared", label: change.label, appliesToAllPages: true };
       throw new Error("未公開変更の一覧が正しくありません。");
@@ -332,7 +335,8 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
     }}>
     <summary>未公開の変更 {changes.length}件</summary>
     {changes.length ? <ul>{changes.map((change, index) => <li key={`${change.kind}:${index}`}>
-      {change.kind === "page" ? `${change.title} (${change.path})` : `${change.label}（全ページ）`}
+      {change.kind === "page" ? `${change.title} (${change.path})`
+        : change.kind === "cms" ? `CMS「${change.title}」（${change.path ?? "詳細ページなし"}）` : `${change.label}（全ページ）`}
     </li>)}</ul> : <p>未公開の変更はありません。</p>}
     {changes.length > 0 && <button className="studio-secondary" type="button" disabled={busy || !version} onClick={() => void publish()}>
       {busy ? "公開中…" : `変更をまとめて公開（${changes.length}件）`}

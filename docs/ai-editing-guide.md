@@ -28,7 +28,7 @@ niho-edit --studio --origin https://studio.example --site site-id publish --chan
 - `check` はサーバーに問い合わせず、変わったファイルを検証します。errors を直してから `push` します。`--html` の出力は本文の参考描画で、head・CMS・埋め込みは公開時に描かれます。
 - `push` は変わったファイルだけを下書きに保存し、公開しません。保存後に `publish --changed` で未公開の変更をまとめて公開します。
 - 新しいページは `page-change`、新しい CMS 項目は `cms-create` で作ってから `pull` し直します。ファイルを足しただけでは作られません。
-- CMS 項目の公開は、今は `cms-publish` で項目ごとに行います（`publish --changed` に CMS を含める作業は #527 で、まだです）。
+- `cms/<collection>/<item>.json` を直して `push` した CMS 項目も、`publish --changed` でページと一緒に公開されます。公開予約がある間は CMS 項目は対象外です。
 - ページに紐づく CMS binding はファイルに含めません。変更は `apply --cms-bindings` を使います。
 
 ### 競合したとき
@@ -67,7 +67,7 @@ niho-edit --studio --origin https://studio.example --site site-id apply home --l
 niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja --expected-version '<saved-version>'
 ```
 
-複数の変更は `changes` で一覧を確認し、すべてをまとめて公開します。共通設定だけを公開する場合も専用の操作を使います。
+複数の変更は `changes` で一覧を確認し、すべてをまとめて公開します。一覧にはページ・共通設定・CMS 項目が入ります。共通設定だけを公開する場合も専用の操作を使います。
 
 ```sh
 niho-edit --studio --origin https://studio.example --site site-id changes
