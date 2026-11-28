@@ -1135,8 +1135,10 @@ async function managedCmsPublication(store: CmsStore, actor: ManagedActor, proje
   const publishedItems = new Map((current?.items ?? []).map((pin) => [cmsItemKey(pin), pin]));
   const loaded = await Promise.all(metas.map(async ({ meta, reason }) => ({ item: await store.item(siteId, site.state.locale, meta), reason })));
   // 下書きの revision が公開版と違っても、値が同じなら未公開の変更として扱わない。
+  // ただし定義を変えた後は、全項目を新しい定義の revision で公開し直す必要があるので、値が同じでも含める。
+  const sameSchema = current?.schema.schemaRevision === site.state.schema.schemaRevision;
   const drafts = loaded.filter(({ item, reason }) => {
-    const pinned = reason === "draft" && current ? publishedItems.get(cmsItemKey(item)) : undefined;
+    const pinned = reason === "draft" && current && sameSchema ? publishedItems.get(cmsItemKey(item)) : undefined;
     return !pinned || !cmsDraftMatchesPublishedValues(current!.schema, item.collectionId, item.values, pinned.values);
   }).map(({ item, reason }): ManagedCmsDraft => {
     const collection = site.state.schema.collections.find(({ id }) => id === item.collectionId);

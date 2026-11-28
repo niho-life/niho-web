@@ -3270,6 +3270,26 @@ testWithD1("publication changes leave out a CMS item saved again with its publis
   assert.deepEqual((await f.changes()).changes.filter(({ kind }) => kind === "cms"), []);
 });
 
+testWithD1("publish --changed republishes every CMS item after a definition change, even with unchanged values", async (t) => {
+  const f = await cmsChangedFixture(t, "cms-schema-change");
+  const { site } = f;
+  const initial = await site.read("cms.schema.read");
+  const { routeTableRevision } = await site.read("cms.release.current");
+  const definition = structuredClone(initial);
+  // 表示名だけを変える。項目の値は変わらないが、定義の revision は変わる。
+  definition.collections[0].fields[0].label = "題名";
+  const plan = (await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema: definition, replacements: [] })).plan;
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
+  const pending = await f.changes();
+  assert.deepEqual(pending.changes.filter(({ kind }) => kind === "cms").map(({ target }) => target.itemId).sort(),
+    [f.first.itemId, f.second.itemId].sort(), "every published item is republished with the new definition");
+  const released = await body(await f.publishChanged(pending.version), 200);
+  assert.equal(released.status, "released", JSON.stringify(released));
+  assert.equal((await site.read("cms.release.current")).snapshot.schema.schemaRevision, schemaRevision);
+  assert.deepEqual((await f.changes()).changes.filter(({ kind }) => kind === "cms"), []);
+});
+
 testWithD1("publish --changed leaves CMS items out while a CMS release is waiting", async (t) => {
   const f = await cmsChangedFixture(t, "cms-waiting");
   const { site, schemaRevision, lookup } = f;
@@ -3956,6 +3976,27 @@ testWithD1("Studio image library uploads, publishes pages and CMS images, and de
   assert.match(cmsHtml, new RegExp(`<img src="${url.replaceAll(".", "\\.")}" alt="" width="640" height="480">`, "u"));
   assert.equal((cmsHtml.match(new RegExp(url.replaceAll(".", "\\."), "gu")) ?? []).length, 2);
   assert.match(cmsResponse.headers.get("Content-Security-Policy"), /img-src 'self'/u, "the shared origin serves the image, so 'self' covers it");
+});
+
+testWithD1("Studio image library lists imported images right after the uploads on the first page", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "image-library-imported"), { siteId } = site;
+  const imported = Array.from({ length: 3 }, (_, index) => ({ reference: { provider: "kamakura-source", id: `src_${String(index).padStart(64, "0")}` },
+    url: `https://media.example.test/imported-${index}.jpg`, width: 400, height: 300, altText: `取り込み ${index}` }));
+  h.objects.set(`sites/${siteId}/migration/legacy-assets.json`, JSON.stringify({ formatVersion: 1, siteId, assets: imported }));
+  const list = async (input) => body(await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v2/sites/${siteId}/operations/assets.list`, input), 200);
+  const empty = await list({});
+  assert.deepEqual(empty.assets.map(({ provider }) => provider), ["kamakura-source", "kamakura-source", "kamakura-source"],
+    "with no uploads the first page already shows the imported images");
+  assert.equal(empty.nextCursor, undefined);
+  assert.deepEqual(empty.providers.map(({ id, capabilities }) => [id, capabilities.upload, capabilities.editMetadata, capabilities.delete]),
+    [["studio-upload", true, false, false], ["kamakura-source", false, false, false]]);
+  const uploaded = (await body(await assetUploader(h)(siteId, pngBytes(64, 48)), 200)).asset;
+  const firstPage = await list({ limit: 2 });
+  assert.deepEqual(firstPage.assets.map(({ id }) => id), [uploaded.id, imported[0].reference.id]);
+  const secondPage = await list({ limit: 2, cursor: firstPage.nextCursor });
+  assert.deepEqual(secondPage.assets.map(({ id }) => id), [imported[1].reference.id, imported[2].reference.id]);
+  assert.equal(secondPage.nextCursor, undefined);
 });
 
 testWithD1("Studio image srcset is off unless resizing is enabled and keeps animated GIFs whole", () => {

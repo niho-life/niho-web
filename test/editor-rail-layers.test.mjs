@@ -150,6 +150,15 @@ test("asset tools split into upload, stock and connect when the host lists provi
   } finally { await app.cleanup(); }
 });
 
+test("a host with only its own sources keeps one asset tool even when it lists providers", async () => {
+  const assets = { combinedPanel: true, listProviders: async () => [], listAssets: async () => ({ assets: [], folders: [] }), resolveAssets: async () => ({}) };
+  const app = await setup({ assets });
+  try {
+    const labels = [...document.querySelectorAll(".e-tools button")].map((node) => node.getAttribute("aria-label"));
+    assert.deepEqual(labels.slice(-4), ["スタイル", "アセット", "コンポーネント", "コンテンツ編集"]);
+  } finally { await app.cleanup(); }
+});
+
 test("layer rows carry a glyph per element kind, and the expand chevron keeps its label and keyboard behaviour", async () => {
   const app = await setup();
   try {

@@ -89,6 +89,8 @@ export interface AssetLibraryAdapter {
   createFolder?(request: { siteId: string; name: string; provider?: string }, signal: AbortSignal): Promise<AssetFolder>;
   /** 実装すると、素材パネルを出所ごとに分け、応答の素材を宣言済みの出所だけに限る。 */
   listProviders?(request: { siteId: string }, signal: AbortSignal): Promise<readonly AssetProvider[]>;
+  /** listProviders があっても左のパネルを出所ごとに分けず、1つの「アセット」パネルの中で出所を切り替える。 */
+  readonly combinedPanel?: boolean;
   acquireAsset?(request: { siteId: string; reference: AssetReference; expectedVersion: string }, signal: AbortSignal): Promise<AssetAcquireResult>;
 }
 

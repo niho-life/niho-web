@@ -204,20 +204,30 @@ export async function listStudioAssets(db: AssetDatabase, bucket: AssetBucket, s
     const page = (rows.results ?? []).slice(0, limit);
     const more = (rows.results ?? []).length > limit;
     let nextCursor: string | undefined = more ? `r${page.at(-1)!.rowid}` : undefined;
-    if (!more && input.provider === undefined && (await legacyAssets(bucket, siteId)).length) nextCursor = "k0";
-    return { assets: page.map((row) => libraryAsset(siteId, publicOrigin, row)), ...(nextCursor ? { nextCursor } : {}), upload, providers: PROVIDERS };
+    const assets = page.map((row) => libraryAsset(siteId, publicOrigin, row));
+    if (!more && input.provider === undefined) {
+      // アップロードが1ページに満たなければ、続けて取り込んだ画像で埋める（「まだありません」と「さらに読み込む」が並ばないように）。
+      const legacy = await legacyAssets(bucket, siteId), fill = legacy.slice(0, limit - assets.length);
+      assets.push(...fill.map((asset) => legacyLibraryAsset(siteId, asset)));
+      nextCursor = legacy.length > fill.length ? `k${fill.length}` : undefined;
+    }
+    return { assets, ...(nextCursor ? { nextCursor } : {}), upload, providers: PROVIDERS };
   }
   const all = await legacyAssets(bucket, siteId);
   const page = all.slice(position, position + limit);
   return {
-    assets: page.map((asset): LibraryAsset => {
-      const { mimeType, kind } = legacyMime(asset.url);
-      return { provider: MIGRATED_PROVIDER, id: asset.reference.id, siteId, kind, status: "ready", name: (asset.altText || asset.reference.id).slice(0, ASSET_LIMITS.nameLength),
-        mimeType, bytes: 0, ...(asset.width === null ? {} : { width: asset.width }), ...(asset.height === null ? {} : { height: asset.height }),
-        alt: asset.altText, thumbnailUrl: asset.url, version: "legacy", updatedAt: new Date(0).toISOString() };
-    }),
+    assets: page.map((asset) => legacyLibraryAsset(siteId, asset)),
     ...(position + limit < all.length ? { nextCursor: `k${position + limit}` } : {}), upload, providers: PROVIDERS
   };
+}
+
+function legacyLibraryAsset(siteId: string, asset: CmsPublicAsset): LibraryAsset {
+  const { mimeType, kind } = legacyMime(asset.url);
+  // 説明の無い取り込み画像は、ID ではなく元のファイル名で見せる。
+  const fileName = (() => { try { return decodeURIComponent(new URL(asset.url).pathname.split("/").at(-1) ?? ""); } catch { return ""; } })();
+  return { provider: MIGRATED_PROVIDER, id: asset.reference.id, siteId, kind, status: "ready", name: (asset.altText || fileName || asset.reference.id).slice(0, ASSET_LIMITS.nameLength),
+    mimeType, bytes: 0, ...(asset.width === null ? {} : { width: asset.width }), ...(asset.height === null ? {} : { height: asset.height }),
+    alt: asset.altText, thumbnailUrl: asset.url, version: "legacy", updatedAt: new Date(0).toISOString() };
 }
 
 export type UploadOutcome =

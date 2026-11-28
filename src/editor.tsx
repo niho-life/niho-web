@@ -686,7 +686,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   useEffect(() => { if (assetPanelVisible) setAssetPanelMounted(true); }, [assetPanelVisible]);
   const tools: readonly (readonly [ToolName, string])[] = [
     ["add", "追加"], ["pages", "ページ"], ["layers", "レイヤー"], ["styles", "スタイル"],
-    ...(assets ? assets.listProviders ? [["upload", "アップロード"], ["stock", "ストック"], ["connect", "接続"]] as const : [["assets", "アセット"]] as const : []),
+    ...(assets ? assets.listProviders && !assets.combinedPanel ? [["upload", "アップロード"], ["stock", "ストック"], ["connect", "接続"]] as const : [["assets", "アセット"]] as const : []),
     ["components", "コンポーネント"]
   ];
   useEffect(() => { setPicker(null); }, [selectedId]);

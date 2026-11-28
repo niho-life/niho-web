@@ -1,4 +1,4 @@
-import { parseAssetListResult, parseAssetUploadResult, parseResolvedAssets, type AssetLibraryAdapter } from "../src/assets.js";
+import { parseAssetListResult, parseAssetProviders, parseAssetUploadResult, parseResolvedAssets, type AssetLibraryAdapter } from "../src/assets.js";
 
 /** Studio 内サイトの画像ライブラリ。素材 API（/api/edit/v2/.../assets.*）を同じ Access 認証で呼ぶ。 */
 export function createManagedAssetLibrary(siteId: string): AssetLibraryAdapter {
@@ -18,6 +18,8 @@ export function createManagedAssetLibrary(siteId: string): AssetLibraryAdapter {
     return value as Record<string, unknown>;
   };
   return {
+    // 出所はアップロードと取り込みの2つだけ。ストック・接続のパネルは出さず、1つのパネルで切り替える。
+    combinedPanel: true,
     async listAssets(query, signal) {
       assertSite(query.siteId);
       const value = await list({ ...(query.provider === undefined ? {} : { provider: query.provider }),
@@ -40,6 +42,12 @@ export function createManagedAssetLibrary(siteId: string): AssetLibraryAdapter {
       if (response.status === 403) return { status: "rejected", reason: "permission" };
       if (!response.ok && (!value || typeof value !== "object" || (value as { status?: unknown }).status !== "rejected")) throw new Error("アップロードに失敗しました。");
       return parseAssetUploadResult(value, siteId);
+    },
+    // サーバーが宣言する出所（アップロード・取り込み）と、その出所でできること。これがあると、選ぶ画面でもアップロードでき、
+    // 変更・削除できない素材ではその操作を出さない。
+    async listProviders(request, signal) {
+      assertSite(request.siteId);
+      return parseAssetProviders((await list({ limit: 1 }, signal)).providers);
     },
     updateAsset: async () => ({ status: "rejected", reason: "permission" }),
     listAssetUsages: async () => [],
