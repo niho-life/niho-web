@@ -1,5 +1,5 @@
-import { PAGE_LIMITS, isTemplatePath, matchesTemplatePath } from "./pages.js";
-import { fail, keys, localeCode, record, string } from "./validation-utils.js";
+import { PAGE_LIMITS, isTemplatePath, matchesTemplatePath, validatePagePath } from "./pages.js";
+import { DocumentValidationError, fail, keys, localeCode, record, string } from "./validation-utils.js";
 
 export type CmsRouteReservation =
   | { readonly kind: "cms-item"; readonly path: string; readonly collectionId: string; readonly itemId: string }
@@ -47,6 +47,18 @@ function routePath(input: unknown, path: string, template: boolean): string {
   return input;
 }
 export function parseCmsRoutePath(input: unknown, path: string): string { return routePath(input, path, false); }
+
+/** A CMS URL follows the page path rules while preserving the case of the final segment. */
+export function validCmsItemPath(path: string): string | null {
+  const separator = path.lastIndexOf("/") + 1;
+  if (validatePagePath(path.slice(0, separator) + path.slice(separator).toLowerCase()) !== null) return null;
+  try {
+    return parseCmsRoutePath(path, "item.path");
+  } catch (error) {
+    if (error instanceof DocumentValidationError) return null;
+    throw error;
+  }
+}
 function identifier(input: unknown, path: string): string {
   const value = string(input, path, 128);
   if (!SAFE_ID.test(value)) fail(path, "invalid route reservation ID");

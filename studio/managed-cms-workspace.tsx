@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { cmsLocalizationItemKey, type CmsCollection, type CmsDiscovery, type CmsItemRevision, type CmsProblem, type CmsReleasePin, type CmsReleaseSnapshot, type CmsSchema } from "../src/cms-v2.js";
-import { cmsDraftMatchesPublishedValues, collectionPathForEditor, redirectsForCmsRelease, starterCollection } from "./managed-cms-model.js";
-import type { CollectionFieldType, CollectionValues, CollectionValue } from "../src/collection-model.js";
+import { cmsDraftMatchesPublishedValues, redirectsForCmsRelease, starterCollection } from "./managed-cms-model.js";
+import { collectionPublicPath, type CollectionFieldType, type CollectionValues, type CollectionValue } from "../src/collection-model.js";
 
 const ManagedCmsTranslation = lazy(() => import("./managed-cms-localization-workspace.js").then((module) => ({ default: module.ManagedCmsTranslation })));
 
@@ -51,6 +51,7 @@ function cmsDefinitionChanges(before: CmsSchema, after: CmsSchema): string[] {
     if (!old) { changes.push(`コレクション追加: ${collection.label}`); continue; }
     if (old.label !== collection.label) changes.push(`${collection.label}: 表示名変更`);
     if (old.pathPrefix !== collection.pathPrefix) changes.push(`${collection.label}: 公開一覧パス変更`);
+    if (old.pathField !== collection.pathField) changes.push(`${collection.label}: 項目の公開パスのフィールドを変更`);
     if (old.ordering !== collection.ordering) changes.push(`${collection.label}: 一覧の並び順変更`);
     if (old.addLabel !== collection.addLabel) changes.push(`${collection.label}: 追加ボタン名変更`);
     const oldFields = new Set(old.fields.map(({ fieldId }) => fieldId));
@@ -230,7 +231,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       }));
       if (!withdraw) pins.push({ itemId: draft.itemId, collectionId, revision: draft.revision });
       const oldPath = snapshot?.items.find((pin) => sameItem(pin, draft))?.path;
-      const path = collectionPathForEditor(currentCollection!, draft.values);
+      const path = collectionPublicPath(currentCollection!, draft.values);
       const redirects = redirectsForCmsRelease(snapshot?.redirects ?? [], oldPath ?? null, path, withdraw);
       const input = { locale: now.locale, schemaRevision: draft.schemaRevision, routeTableRevision: now.routeTableRevision,
         expectedReleaseId: snapshot?.releaseId ?? null, items: pins, redirects,
@@ -344,6 +345,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     updateSchemaDraft((schema) => ({ ...schema, collections: schema.collections.map((entry) => entry.id !== collection.id ? entry : {
       ...entry, fields, titleField,
       ...(entry.slugField === fieldId ? { slugField: null, pathPrefix: null } : {}),
+      ...(entry.pathField === fieldId ? { pathField: null } : {}),
       ...(entry.imageField === fieldId ? { imageField: null } : {}),
       ...(entry.subtitleField === fieldId ? { subtitleField: null } : {})
     }) }));
@@ -443,6 +445,9 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
                 ...schema, collections: schema.collections.map((entry) => entry.id === editableCollection.id ? { ...entry,
                   slugField: event.target.value || null, pathPrefix: event.target.value ? entry.pathPrefix : null } : entry)
               }))}><option value="">使わない</option>{editableCollection.fields.filter(({ type }) => type === "slug").map(({ fieldId, label }) => <option key={fieldId} value={fieldId}>{label}</option>)}</select></label>
+              <label>項目の公開パスのフィールド <select value={editableCollection.pathField ?? ""} onChange={(event) => updateSchemaDraft((schema) => ({
+                ...schema, collections: schema.collections.map((entry) => entry.id === editableCollection.id ? { ...entry, pathField: event.target.value || null } : entry)
+              }))}><option value="">使わない</option>{editableCollection.fields.filter(({ type }) => type === "text").map(({ fieldId, label }) => <option key={fieldId} value={fieldId}>{label}</option>)}</select></label>
               <label>画像フィールド <select value={editableCollection.imageField ?? ""} onChange={(event) => updateSchemaDraft((schema) => ({
                 ...schema, collections: schema.collections.map((entry) => entry.id === editableCollection.id ? { ...entry, imageField: event.target.value || null } : entry)
               }))}><option value="">使わない</option>{editableCollection.fields.filter(({ type }) => type === "image").map(({ fieldId, label }) => <option key={fieldId} value={fieldId}>{label}</option>)}</select></label>

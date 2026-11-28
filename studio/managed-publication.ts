@@ -131,7 +131,7 @@ export function parsePublishedSiteManifest(value: unknown, siteId: string): Publ
     || Object.hasOwn(value, "publicBaseUrl") && (typeof value.publicBaseUrl !== "string" || value.publicBaseUrl.length > 512 || !validPublicBaseUrl(value.publicBaseUrl))
     || Object.hasOwn(value, "publicPolicy") && !parseManagedPublicPolicy(value.publicPolicy, "https://publication.invalid")
     || Object.hasOwn(value, "robotsPolicy") && value.robotsPolicy !== "index" && value.robotsPolicy !== "noindex") return null;
-  if (Object.hasOwn(value, "redirects") && !parseManagedSiteRedirects(value.redirects, MAX_PUBLISHED_SITE_REDIRECTS)) return null;
+  if (Object.hasOwn(value, "redirects") && !parseManagedSiteRedirects(value.redirects, MAX_PUBLISHED_SITE_REDIRECTS, { includeCmsPaths: true })) return null;
   if (Object.hasOwn(value, "discoveryFiles")) {
     if (!Array.isArray(value.discoveryFiles) || value.discoveryFiles.length < DISCOVERY_PATHS.length
       || value.discoveryFiles.length > DISCOVERY_PATHS.length + 1) return null;
@@ -246,7 +246,7 @@ export async function preparePublishedManifest(input: {
   const activeRoutes = omitRoute
     ? routes.filter((route) => route.pageId !== omitRoute.pageId || route.locale !== omitRoute.locale)
     : routes;
-  const redirects = input.redirects === undefined ? previous.redirects : parseManagedSiteRedirects(input.redirects, MAX_PUBLISHED_SITE_REDIRECTS);
+  const redirects = input.redirects === undefined ? previous.redirects : parseManagedSiteRedirects(input.redirects, MAX_PUBLISHED_SITE_REDIRECTS, { includeCmsPaths: true });
   if (input.redirects !== undefined && !redirects) throw new Error("invalid managed publication redirects");
   const createdAt = new Date().toISOString();
   const discoveryFiles = await createDiscoveryFiles(bucket, siteId, activeRoutes, {
@@ -366,7 +366,7 @@ export async function preparePublishedSiteBatch(input: PublishedSiteInput & {
   if (!SAFE_ID.test(siteId) || !SAFE_ID.test(publicationId) || !input.expectedVersion || input.expectedVersion.length > 200
     || siteName !== undefined && siteName.length > 300 || siteDescription !== undefined && siteDescription.length > 1000
     || robotsPolicy !== undefined && robotsPolicy !== "index" && robotsPolicy !== "noindex") throw new Error("invalid managed publication input");
-  const redirects = input.redirects === undefined ? undefined : parseManagedSiteRedirects(input.redirects, MAX_PUBLISHED_SITE_REDIRECTS);
+  const redirects = input.redirects === undefined ? undefined : parseManagedSiteRedirects(input.redirects, MAX_PUBLISHED_SITE_REDIRECTS, { includeCmsPaths: true });
   if (input.redirects !== undefined && !redirects) throw new Error("invalid managed publication redirects");
 
   const previous = input.currentManifestKey ? await readPublishedManifest(bucket, siteId, input.currentManifestKey) : null;

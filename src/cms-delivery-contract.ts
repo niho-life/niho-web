@@ -1,4 +1,5 @@
 import { parseCmsReleaseAssetManifest } from "./cms-v2-assets.js";
+import { collectionPublicPath } from "./collection-model.js";
 import type { CmsReleaseSnapshot } from "./cms-v2-release.js";
 import { parseCmsRoutePath, parseCmsRouteRevision, parseCmsRouteTable, type CmsRouteReservation } from "./cms-v2-routes.js";
 import { cmsArray, cmsId, cmsItemKey, cmsReferenceProblems, parseCmsItemRevision, parseCmsSchema, uniqueCmsKeys } from "./cms-v2-schema.js";
@@ -103,12 +104,13 @@ export function parseCmsDeliverySnapshot(input: unknown, siteId: string, locale:
   const sourceLocale = raw.sourceLocale === undefined ? undefined : localeCode(raw.sourceLocale, "snapshot.sourceLocale");
   if (schema.siteId !== siteId || routeTable.reservations.some((route) => !cmsRoute(route))) fail("snapshot", "CMS snapshot contains an out-of-scope schema or route");
   const collections = new Map(schema.collections.map((collection) => [collection.id, collection]));
+  const localizedPathPrefix = sourceLocale && sourceLocale !== locale ? `/${locale}` : "";
   const items = cmsArray(raw.items, "snapshot.items", 25_000).map((entry) => {
     const { path, ...revision } = record(entry, "snapshot.items");
     const item = parseCmsItemRevision(revision, schema);
     const collection = collections.get(item.collectionId)!;
-    const slug = collection.slugField === null ? null : item.values[collection.slugField];
-    if (item.locale !== locale || (collection.pathPrefix === null ? path !== null : typeof slug !== "string" || path !== `${collection.pathPrefix}${slug}`))
+    const expectedPath = collectionPublicPath(collection, item.values, localizedPathPrefix);
+    if (item.locale !== locale || path !== expectedPath || expectedPath === null && (collection.pathField || collection.pathPrefix !== null))
       fail("snapshot.items", "CMS item locale or path mismatch");
     return { ...item, path: path === null ? null : parseCmsRoutePath(path, "snapshot.items.path") };
   });

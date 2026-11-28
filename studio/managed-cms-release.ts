@@ -1,4 +1,4 @@
-import { revalidateCmsRelease, type CmsProblem, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot } from "../src/cms-v2.js";
+import { revalidateCmsRelease, type CmsProblem, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable } from "../src/cms-v2.js";
 import { cmsItemKey } from "../src/cms-v2-schema.js";
 import { cmsLocalizedSchema } from "./managed-cms-localization.js";
 import { prepareManagedCmsPublication, type ManagedD1 } from "./managed-sites.js";
@@ -12,7 +12,7 @@ export { escapeHtml };
 
 export { collectionPath, previewContent };
 
-export function releaseImpacts(snapshot: CmsReleaseSnapshot, fixedRoutes: Set<string>): CmsProblem[] {
+export function releaseImpacts(snapshot: CmsReleaseSnapshot, currentRoutes: CmsRouteTable): CmsProblem[] {
   const listPaths = snapshot.schema.collections.flatMap(({ pathPrefix }) => {
     const path = collectionPath(pathPrefix);
     return path === null ? [] : [path];
@@ -22,17 +22,33 @@ export function releaseImpacts(snapshot: CmsReleaseSnapshot, fixedRoutes: Set<st
   const allowedCmsPath = localized
     ? (path: string) => path === root || path.startsWith(`${root}/`)
     : cmsPathReserved;
-  const paths = [root, ...listPaths, ...snapshot.items.flatMap(({ path }) => path ? [path] : []), ...snapshot.redirects.map(({ from }) => from)];
-  return paths.filter((path, i) => !allowedCmsPath(path) || fixedRoutes.has(path) || paths.indexOf(path) !== i)
-    .map((path): CmsProblem => ({ code: "route", path, message: "CMS の一覧・詳細・転送パスが固定ページまたは別の CMS パスと重複しています。" }));
+  const fixedRoutes = new Set<string>(), priorCmsPaths = new Set<string>();
+  for (const entry of currentRoutes.reservations) {
+    if (entry.kind === "cms-item" || entry.kind === "redirect" && entry.owner === "cms") priorCmsPaths.add(entry.path);
+    else if (entry.kind !== "reserved" || !entry.reservationId.startsWith("cms_route_")) fixedRoutes.add(entry.path);
+  }
+  const explicitCollections = new Set(snapshot.schema.collections.filter(({ pathField }) => pathField).map(({ id }) => id));
+  const explicitItemPaths = new Set<string>();
+  const paths = [root, ...listPaths].map((path) => ({ path, allowed: allowedCmsPath(path) }));
+  for (const { path, collectionId } of snapshot.items) {
+    if (path === null) continue;
+    if (explicitCollections.has(collectionId)) explicitItemPaths.add(path);
+    paths.push({ path, allowed: explicitItemPaths.has(path) || allowedCmsPath(path) });
+  }
+  paths.push(...snapshot.redirects.map(({ from, to }) => ({ path: from,
+    allowed: allowedCmsPath(from) || explicitItemPaths.has(to) || priorCmsPaths.has(from) })));
+  const seen = new Set<string>();
+  return paths.flatMap(({ path, allowed }): CmsProblem[] => {
+    const invalid = !allowed || fixedRoutes.has(path) || seen.has(path);
+    seen.add(path);
+    return invalid ? [{ code: "route", path, message: "CMS の一覧・詳細・転送パスが固定ページまたは別の CMS パスと重複しています。" }] : [];
+  });
 }
 
 export async function releaseContext(store: CmsStore, site: Site, pins: readonly CmsReleasePin[]): Promise<CmsReleaseContext> {
   const [approved, routeTable] = await Promise.all([
     store.approvedPins(site, pins), store.routeTable(site, "cms.publish")
   ]);
-  const fixedRoutes = new Set(routeTable.reservations.flatMap((entry) =>
-    entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));
   const revisions = new Map(await Promise.all(approved.map(async (pin) =>
     [pin.revision, await store.item(site.siteId, site.state.locale, pin)] as const)));
   const publicAssets = await store.publicAssets(site.state.schema, [...revisions.values()]);
@@ -41,7 +57,7 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
     routeTable, publicAssets,
     readRevision: (pin) => revisions.get(pin.revision),
     isRemoved: (pin) => !site.state.items[cmsItemKey(pin)] || site.state.items[cmsItemKey(pin)]!.removedAt !== null,
-    impact: (snapshot) => releaseImpacts(snapshot, fixedRoutes),
+    impact: (snapshot) => releaseImpacts(snapshot, routeTable),
     // Worker runs without a DOM parser. This initial renderer preserves rich text as inert text.
     publicRichText: ({ html }) => escapeHtml(html)
   };
@@ -58,8 +74,8 @@ const JOB_COST = `CASE kind WHEN 'verify' THEN 3 + json_array_length(payload_jso
                      ELSE ${RELEASE_JOB_OVERHEAD} + json_array_length(payload_json, '$.pins') END`;
 
 async function localizedReleaseContext(store: CmsStore, site: Site, snapshot: CmsReleaseSnapshot): Promise<CmsReleaseContext> {
-  const [routeTable, fixedRoutes, revisions] = await Promise.all([
-    store.routeTable(site, "cms.publish", snapshot.locale), store.fixedRoutes(site, "cms.publish", snapshot.locale),
+  const [routeTable, revisions] = await Promise.all([
+    store.routeTable(site, "cms.publish", snapshot.locale),
     Promise.all(snapshot.items.map((pin) => store.item(site.siteId, snapshot.locale, pin)))
   ]);
   const revisionByKey = new Map(revisions.map((item) => [cmsItemKey(item), item]));
@@ -67,7 +83,7 @@ async function localizedReleaseContext(store: CmsStore, site: Site, snapshot: Cm
     currentReleaseId: site.state.localizedReleases?.[snapshot.locale]?.id ?? null, routeTable,
     publicAssets: await store.publicAssets(snapshot.schema, revisions), readRevision: (pin) => revisionByKey.get(cmsItemKey(pin)),
     isRemoved: (pin) => !site.state.items[cmsItemKey(pin)] || site.state.items[cmsItemKey(pin)]!.removedAt !== null,
-    impact: (candidate) => releaseImpacts(candidate, fixedRoutes), publicRichText: ({ html }) => escapeHtml(html) };
+    impact: (candidate) => releaseImpacts(candidate, routeTable), publicRichText: ({ html }) => escapeHtml(html) };
 }
 
 async function claim(db: ManagedD1, id: string | null, at: number, budget: number) {

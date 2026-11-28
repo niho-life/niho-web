@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import {
   cancelCmsSchedule, checkCmsReleaseApply, checkCmsReplay, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
-  cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem,
+  cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem, collectCmsLocalizationUnits,
   discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsReleaseAssetManifest, parseCmsSchema,
   parseCmsRouteTable, parseCmsSchemaPlanInput, planCmsMigrationWithRouteTables, planCmsRelease, planCmsRouteTable,
   planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease,
@@ -13,6 +13,7 @@ import { assetKey } from "@niho/web/assets";
 import { parsePageDocument } from "@niho/web/core";
 import { renderPageToHtml } from "@niho/web/server";
 import { parseCollectionSchemaResult } from "@niho/web/collection-model";
+import { parseCmsDeliverySnapshot, serializeCmsDeliverySnapshot } from "../dist/cms-delivery-contract.js";
 import { postsDefinition, tagsDefinition } from "./collection-fixtures.mjs";
 
 const siteId = "demo-site", locale = "ja", now = "2026-11-26T10:00:00Z", later = "2026-11-26T12:00:00Z";
@@ -440,6 +441,76 @@ test("CMS release routes preserve the case of legacy slugs", () => {
   assert.equal(plan.status, "ready");
   assert.ok(plan.proposal.snapshot.routeTable.reservations.some((entry) => entry.kind === "cms-item" && entry.path === "/posts/Legacy-Case"));
   assert.equal(plan.proposal.snapshot.items.find(({ itemId }) => itemId === legacyCase.itemId).path, "/posts/Legacy-Case");
+});
+
+test("CMS item paths override the slug route and keep the same field value across locales", async () => {
+  const source = schema();
+  const collection = { ...source.collections[0], pathField: "field-route", fields: [...source.collections[0].fields,
+    { fieldId: "field-route", key: "public_path", label: "Public path", type: "text", placement: "side" }] };
+  const model = parseCmsSchema({ ...source, collections: [collection, source.collections[1]] });
+  assert.equal(model.collections[0].pathField, "field-route");
+  assert.equal(cmsLegacyCollections(model)[0].pathField, "public_path");
+  assert.throws(() => parseCmsSchema({ ...model, collections: [{ ...collection, pathField: "field-slug" }] }), /field type does not fit/u);
+  assert.throws(() => parseCmsSchema({ ...model, collections: [{ ...collection, pathField: "missing-field" }] }), /unknown field ID/u);
+  const item = { ...post, siteId, revision: "rev-1", schemaRevision: model.schemaRevision,
+    values: { "field-title": "Article", "field-slug": "article", "field-route": "/archive/Legacy-Case" } };
+  const localized = await collectCmsLocalizationUnits(model, item, "en");
+  assert.ok(localized.fields.some(({ identity }) => identity.fieldId === "field-title"));
+  assert.ok(!localized.fields.some(({ identity }) => identity.fieldId === "field-route"));
+
+  const release = (entry, reservations = []) => {
+    const routeTable = { siteId, locale: entry.locale, revision: "routes-1", reservations };
+    return planCmsRelease({ siteId, locale: entry.locale, schemaRevision: model.schemaRevision, routeTableRevision: routeTable.revision,
+      expectedReleaseId: null, items: [pin(entry)], redirects: [] }, "release-1", {
+      schema: model, locale: entry.locale, sourceLocale: locale, currentReleaseId: null, routeTable,
+      readRevision: () => entry, isRemoved: () => false
+    });
+  };
+  for (const [entry, path] of [[item, "/archive/Legacy-Case"], [{ ...item, locale: "en" }, "/en/archive/Legacy-Case"]]) {
+    const plan = release(entry);
+    assert.equal(plan.status, "ready");
+    const { snapshot } = plan.proposal;
+    assert.equal(snapshot.items[0].path, path);
+    assert.equal(snapshot.items[0].values["field-route"], item.values["field-route"]);
+    const { body } = await serializeCmsDeliverySnapshot(snapshot);
+    assert.equal(parseCmsDeliverySnapshot(JSON.parse(body), siteId, entry.locale).items[0].path, path);
+    const tampered = JSON.parse(body);
+    tampered.items[0].path = "/posts/article";
+    assert.throws(() => parseCmsDeliverySnapshot(tampered, siteId, entry.locale), /locale or path mismatch/u);
+    assert.equal(release(entry, [{ kind: "reserved", path, reservationId: "already-reserved" }]).status, "invalid");
+  }
+  for (const path of ["", "/", "https://example.test/a", "//example.test/a", "/a?x=y", "/a/../b", "/a/"]) {
+    const plan = release({ ...item, values: { ...item.values, "field-route": path } });
+    assert.equal(plan.status, "invalid");
+    assert.ok(plan.problems.some(({ fieldId, code }) => fieldId === "field-route" && code === "route"));
+  }
+
+  const host = new MemoryHost();
+  host.routeTables[0].reservations.push({ kind: "fixed-page", path: "/fixed", reservationId: "already-reserved" });
+  const next = { ...model, schemaRevision: "schema-2" };
+  const replacement = (path) => [{ ...post, values: { "field-route": path } }];
+  assert.ok(host.planSchema(next, replacement("/fixed")).migration.problems.some(({ code, path }) => code === "route" && path === "/fixed"));
+  assert.ok(host.planSchema(next, replacement("/posts")).migration.problems.some(({ code, path }) => code === "route" && path === "/posts"));
+  assert.ok(host.planSchema(next, replacement("/invalid/")).migration.problems.some(({ code, fieldId }) => code === "route" && fieldId === "field-route"));
+  assert.deepEqual(host.planSchema(next, replacement("/archive/new")).migration.problems, []);
+
+  const jaRoutes = { siteId, locale: "ja", revision: "routes-ja", reservations: [] };
+  const enRoutes = { siteId, locale: "en", revision: "routes-en", reservations: [
+    { kind: "fixed-page", path: "/en/archive/Legacy-Case", reservationId: "en-fixed" }
+  ] };
+  const enItem = { ...item, locale: "en", revision: "rev-en" };
+  const migrationInput = { before: model, next: { ...model, schemaRevision: "schema-3" }, items: [
+    { item, tombstoned: false }, { item: enItem, tombstoned: false }
+  ], routeTables: [jaRoutes, enRoutes], expectedRouteTableVersions: [
+    { locale: "en", revision: "routes-en" }, { locale: "ja", revision: "routes-ja" }
+  ], sourceLocale: "ja" };
+  const englishConflict = planCmsMigrationWithRouteTables(migrationInput);
+  assert.ok(englishConflict.problems.some(({ path }) => path === "/en/archive/Legacy-Case"));
+
+  const listConflict = planCmsMigrationWithRouteTables({ ...migrationInput,
+    items: [{ item, tombstoned: false }, { item: { ...enItem, values: { ...enItem.values, "field-route": "/cms/posts" } }, tombstoned: false }],
+    routeTables: [jaRoutes, { ...enRoutes, reservations: [] }] });
+  assert.ok(listConflict.problems.some(({ locale: problemLocale, path }) => problemLocale === "en" && path === "/en/cms/posts"));
 });
 
 test("fixed-page redirect targets are accepted and conflicting sources remain invalid without duplicate reservations", () => {

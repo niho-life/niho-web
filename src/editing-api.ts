@@ -332,6 +332,7 @@ const pageChangePlanPageSchema: JsonSchema = pageCatalogItemSchema;
 const cmsCollectionSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["id", "label", "addLabel", "ordering", "pathPrefix", "titleField", "slugField", "imageField", "subtitleField", "capabilities", "fields"]), additionalProperties: false,
   properties: Object.freeze({ id: Object.freeze({ type: "string" }), label: Object.freeze({ type: "string" }), addLabel: Object.freeze({ type: "string" }), icon: Object.freeze({ type: "string", enum: Object.freeze(["document", "people", "person", "tag"]) }),
     ordering: Object.freeze({ type: "string", enum: Object.freeze(["publishedAt", "manual"]) }), pathPrefix: Object.freeze({ oneOf: Object.freeze([{ type: "string" }, { const: null }]) }),
+    pathField: Object.freeze({ oneOf: Object.freeze([{ type: "string" }, { const: null }]) }),
     titleField: Object.freeze({ type: "string" }), slugField: Object.freeze({ oneOf: Object.freeze([{ type: "string" }, { const: null }]) }),
     imageField: Object.freeze({ oneOf: Object.freeze([{ type: "string" }, { const: null }]) }), subtitleField: Object.freeze({ oneOf: Object.freeze([{ type: "string" }, { const: null }]) }),
     capabilities: Object.freeze({ type: "object", additionalProperties: true }), fields: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "object", additionalProperties: true }) }) }) });

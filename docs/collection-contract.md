@@ -106,6 +106,7 @@ type CollectionDefinition = {
   icon?: 'document' | 'people' | 'person' | 'tag';
   ordering: 'publishedAt' | 'manual';                    // 一覧の並び
   pathPrefix: string | null;                             // 公開時のアドレスの前（例 "/posts/"）
+  pathField?: string | null;                              // CMS v2: type: text の完全な公開 path（指定時は slug より優先）
   titleField: string;                                    // type: text の項目
   slugField: string | null;                              // type: slug の項目
   imageField: string | null;                             // type: image の項目（shape: round なら一覧の画像も丸）
@@ -174,10 +175,12 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 - 読み込み中・空・検索で 0 件・失敗（再試行）・権限なしを分けて出します。幅 900px 以下はコレクションの並びを上で折り返し、640px 以下は行を縦のカードにします。320px でも横にはみ出しません。
 - 項目から一覧へ戻ると、その項目の行へ focus を戻します。
 
+CMS v2 で `pathField` を指定した場合、選んだ `text` field の正規化済み path を項目詳細の URL に使います。未指定の定義は従来どおり `pathPrefix` + `slugField` です。`pathPrefix` は引き続き一覧の URL に使います。
+
 項目の編集:
 
 - 上のバーに「‹ 一覧へ」・状態の印・保存の状態（保存中… / 保存しました / 保存できませんでした［再試行］）・「プレビュー」・「…」（変更を取り消す・非公開にする・複製する・削除する）・主ボタン（「公開する」、変更ありなら「変更を公開する」、公開中で変更が無ければ「公開中」、反映中は「反映中」）。
-- `placement: "main"` の項目を中央の列に、`"side"` の項目を右の欄に並び順どおり出します。`titleField` は大きい題名の入力です。右の欄の一番上に「公開」（状態・公開日時・最終更新・アドレス＝`pathPrefix` + slug・予約）を置きます。幅 900px 以下は右の欄を本文の下に出します。
+- `placement: "main"` の項目を中央の列に、`"side"` の項目を右の欄に並び順どおり出します。`titleField` は大きい題名の入力です。右の欄の一番上に「公開」（状態・公開日時・最終更新・アドレス・予約）を置きます。アドレスは CMS v2 の `pathField` があればその値、なければ `pathPrefix` + slug です。幅 900px 以下は右の欄を本文の下に出します。
 - 直すたびに `autosaveDelay` 待って下書きを自動で保存します（`version` を付けて 1 回）。保存中にさらに直したら、終わった後にもう一度保存します。
 - `conflict` は上書きせず「ほかの人が先に保存しました」と出し、「最新を読み込む」で読み直します（この画面でいま直したところは消えると書きます）。解決するまで自動保存と公開を止めます。
 - `invalid` は該当の項目の下にエラーを出し、入力に `aria-invalid` と `aria-describedby` を付けます。直すとその項目のエラーを消します。

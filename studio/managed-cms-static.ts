@@ -15,7 +15,7 @@ export function cmsCollectionPath(prefix: string | null): string | null {
 export function previewCmsContent(schema: CmsReleaseSnapshot["schema"], item: CmsReleaseSnapshot["items"][number]) {
   const collection = schema.collections.find(({ id }) => id === item.collectionId)!;
   const title = String(item.values[collection.titleField] ?? "");
-  const fields = collection.fields.filter(({ fieldId, type }) => fieldId !== collection.titleField && fieldId !== collection.slugField
+  const fields = collection.fields.filter(({ fieldId, type }) => fieldId !== collection.titleField && fieldId !== collection.slugField && fieldId !== collection.pathField
     && ["text", "longText", "richText", "datetime"].includes(type));
   return { title, fields: fields.map((field) => ({ label: field.label, text: String(item.values[field.fieldId] ?? "") })) };
 }
@@ -101,7 +101,7 @@ async function renderCmsRoute(snapshot: CmsReleaseSnapshot, candidate: CmsStatic
   let description = candidate.description;
   if (entry && collection) {
     const assets = new Map(snapshot.assetManifest.map((asset) => [assetKey(asset.reference), asset] as const));
-    body = collection.fields.filter(({ fieldId }) => fieldId !== collection.titleField && fieldId !== collection.slugField)
+    body = collection.fields.filter(({ fieldId }) => fieldId !== collection.titleField && fieldId !== collection.slugField && fieldId !== collection.pathField)
       .map(({ fieldId, type }) => {
         const value = entry.values[fieldId];
         if (type === "image" && value && typeof value === "object" && "provider" in value) return publicImage(value, assets, include);

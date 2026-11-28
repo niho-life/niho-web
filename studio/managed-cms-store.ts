@@ -210,14 +210,7 @@ export class CmsStore {
     });
   }
 
-  async fixedRoutes(site: Site, capability: CmsCapability, locale = site.state.locale) {
-    const results = await this.db.prepare(`SELECT path FROM managed_pages WHERE site_id = ?2 AND locale = ?6
-      AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, capability), locale).all<{ path: string }>();
-    if (!results.success || !results.results) throw new Error("CMS route lookup failed");
-    return new Set(results.results.map(({ path }) => path));
-  }
-
-  /** Compose the current CMS route snapshot with live, published fixed pages. */
+  /** Compose the locale snapshot with fixed paths and redirect sources, which are site-wide. */
   async routeTable(site: Site, capability: CmsCapability, locale = site.state.locale): Promise<CmsRouteTable> {
     let stored: CmsRouteTable | null = null;
     const localized = site.state.localizedReleases?.[locale];
@@ -238,11 +231,15 @@ export class CmsStore {
     const base = stored ?? { siteId: site.siteId, locale,
       revision: snapshot?.routeTableRevision ?? (snapshot ? `routes_${await digest(legacyReservations)}` : "routes_initial"),
       reservations: legacyReservations };
-    const pages = await this.db.prepare(`SELECT page_id, path, visibility, published_revision FROM managed_pages WHERE site_id = ?2 AND locale = ?6
-      AND EXISTS (SELECT 1 ${AUTH}) ORDER BY path, page_id`)
-      .bind(...scopeValues(site, capability), locale).all<{ page_id: string; path: string; visibility: string; published_revision: number | null }>();
-    if (!pages.success || !pages.results) throw new Error("CMS route lookup failed");
-    const fixed = await Promise.all(pages.results.map(async ({ page_id, path, visibility, published_revision }) => ({
+    const paths = await this.db.prepare(`WITH host_paths AS (
+      SELECT page_id, path, visibility, published_revision FROM managed_pages WHERE site_id = ?2
+      UNION ALL
+      SELECT NULL, redirect.from_path, NULL, NULL FROM managed_site_redirects AS redirect WHERE redirect.site_id = ?2
+        AND NOT EXISTS (SELECT 1 FROM managed_pages AS page WHERE page.site_id = ?2 AND page.path = redirect.from_path)
+    ) SELECT * FROM host_paths WHERE EXISTS (SELECT 1 ${AUTH}) ORDER BY path, page_id`)
+      .bind(...scopeValues(site, capability)).all<{ page_id: string | null; path: string; visibility: string | null; published_revision: number | null }>();
+    if (!paths.success || !paths.results) throw new Error("CMS route lookup failed");
+    const fixed = await Promise.all(paths.results.map(async ({ page_id, path, visibility, published_revision }) => ({
       kind: visibility === "public" && published_revision !== null ? "fixed-page" as const : "reserved" as const, path,
       reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale, page_id, path })).slice(0, 32)}`
     })));

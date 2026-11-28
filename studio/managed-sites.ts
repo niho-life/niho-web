@@ -1187,13 +1187,12 @@ function pageIsPublished(page: ManagedPublicationCandidate, publishedKeys: Reado
     || page.visibility === "public" && (!hasManifest || page.published_bindings_json !== null));
 }
 
-async function publishedCmsSnapshots(store: CmsStore, siteId: string, next?: CmsReleaseSnapshot) {
+async function publishedCmsSnapshots(store: CmsStore, siteId: string) {
   const row = await store.db.prepare("SELECT state_json FROM managed_cms_state WHERE site_id = ?1").bind(siteId).first<{ state_json: string }>();
   const state = row ? JSON.parse(row.state_json) as Site["state"] : null;
   const refs = new Map(Object.entries(state?.localizedReleases ?? {}).map(([locale, release]) => [locale, release.id]));
   if (state?.current) refs.set(state.locale, state.current.id);
-  if (next) refs.set(next.locale, next.releaseId);
-  return Promise.all([...refs.values()].map((id) => next?.releaseId === id ? next : store.snapshot(siteId, id)));
+  return Promise.all([...refs.values()].map((id) => store.snapshot(siteId, id)));
 }
 
 function publicReleaseRedirects(pageRedirects: readonly ManagedSiteRedirect[], cmsSnapshots: readonly CmsReleaseSnapshot[]): ManagedSiteRedirect[] {
@@ -1438,7 +1437,8 @@ export async function prepareManagedCmsPublication(store: CmsStore, site: Site, 
   if (!baseUrl) throw new Error("managed public origin unavailable");
   const base = new URL(baseUrl), prefix = base.pathname.replace(/\/$/u, "");
   const styles = await readManagedPublishedSiteStyles(store, siteId);
-  const snapshots = await publishedCmsSnapshots(store, siteId, next);
+  const previousSnapshots = await publishedCmsSnapshots(store, siteId);
+  const snapshots = [...previousSnapshots.filter(({ locale }) => locale !== next.locale), next];
   const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.releaseId, snapshot]));
   const publishedKeys = new Set((manifest?.routes ?? []).map((route) => route.pageId + "\u0000" + route.locale));
   const targets: ManagedPagePublicationTarget[] = [], updatedBindings: ManagedPagePublicationTarget[] = [];
@@ -1476,7 +1476,8 @@ export async function prepareManagedCmsPublication(store: CmsStore, site: Site, 
   const policy = parseManagedPublicPolicy(manifest?.publicPolicy ?? JSON.parse(state.public_policy_json), base.origin) ?? emptyManagedPublicPolicy();
   const cms = await prepareManagedCmsStaticRoutes({ snapshots, previousRoutes: manifest?.routes ?? [], updatedLocale: next.locale,
     origin: base.origin, prefix, siteName: state.site_name, policy });
-  const pageRedirects = (manifest?.redirects ?? []).filter(({ fromPath }) => !/^\/(?:[A-Za-z]{2,3}\/)?cms(?:\/|$)/u.test(fromPath));
+  const cmsRedirectSources = new Set(previousSnapshots.flatMap((snapshot) => snapshot.redirects.map(({ from }) => from)));
+  const pageRedirects = (manifest?.redirects ?? []).filter(({ fromPath }) => !cmsRedirectSources.has(fromPath));
   const prepared = await prepareManagedPagePublicationBatch({ store, siteId, targets, replacePages: [], replaceAll: true,
     expectedVersion: state.version, publicationId: crypto.randomUUID(), publicUrl: base, publicPrefix: prefix,
     additionalRoutes: cms.routes, additionalPaths: cms.paths, policyMode: "published",

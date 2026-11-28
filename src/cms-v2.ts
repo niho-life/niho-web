@@ -192,7 +192,8 @@ function verifyCmsConfirmation<T>(scope: CmsPlanScope, input: unknown, operation
 }
 /** Rebuild from authoritative drafts and impacts immediately before the host's CAS transaction. */
 export function checkCmsSchemaApply(scope: CmsPlanScope, input: unknown, plan: CmsSchemaPlan, now: string,
-  before: CmsSchema, drafts: readonly CmsMigrationDraft[], routeTables: readonly CmsRouteTable[], replacements: readonly CmsMigrationReplacement[] = [], impact?: CmsMigrationImpact): CmsApplyCheck<CmsRouteBoundMigration> {
+  before: CmsSchema, drafts: readonly CmsMigrationDraft[], routeTables: readonly CmsRouteTable[], replacements: readonly CmsMigrationReplacement[] = [],
+  impact?: CmsMigrationImpact, sourceLocale?: string): CmsApplyCheck<CmsRouteBoundMigration> {
   const checked = verifyCmsConfirmation(scope, input, "cms.schema.apply", plan, now);
   if (checked.status !== "allowed") return checked;
   if (checked.candidate.schema.siteId !== scope.siteId || before.siteId !== scope.siteId || before.schemaRevision !== checked.candidate.fromRevision) return { status: "conflict" };
@@ -201,8 +202,10 @@ export function checkCmsSchemaApply(scope: CmsPlanScope, input: unknown, plan: C
     return { locale: parsed.locale, revision: parsed.revision };
   }).sort((a, b) => a.locale < b.locale ? -1 : a.locale > b.locale ? 1 : 0);
   if (JSON.stringify(currentVersions) !== JSON.stringify(checked.candidate.routeTableVersions)) return { status: "conflict" };
+  const currentSourceLocale = sourceLocale ?? checked.candidate.sourceLocale;
+  if (currentSourceLocale !== checked.candidate.sourceLocale) return { status: "conflict" };
   const live = planCmsMigrationWithRouteTables({ before, next: checked.candidate.schema, items: drafts, replacements,
-    routeTables, expectedRouteTableVersions: checked.candidate.routeTableVersions, ...(impact ? { impact } : {}) });
+    routeTables, expectedRouteTableVersions: checked.candidate.routeTableVersions, sourceLocale: currentSourceLocale, ...(impact ? { impact } : {}) });
   if (!live) return { status: "conflict" };
   return live.problems.length || canonicalJson(live) !== canonicalJson(checked.candidate)
     ? { status: "conflict" } : { status: "allowed", candidate: live };

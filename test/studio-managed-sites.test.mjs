@@ -2142,6 +2142,59 @@ testWithD1("Studio CMS release snapshots include live unpublished page reservati
   assert.ok(released.snapshot.routeTable.reservations.some(({ kind, path }) => kind === "reserved" && path === "/about"));
 });
 
+testWithD1("Studio publishes explicit CMS item URLs and replaces their old redirects atomically", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "explicit-cms-paths");
+  const initial = await site.read("cms.schema.read"), { routeTableRevision } = await site.read("cms.release.current");
+  const nextSchema = structuredClone(initial);
+  nextSchema.collections[0].pathField = "public_path";
+  nextSchema.collections[0].fields.push({ fieldId: "public_path", key: "public_path", label: "Public path", type: "text", placement: "side" });
+  const { plan: schemaPlan } = await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema, replacements: [] });
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: schemaPlan.operationId, confirmationToken: schemaPlan.confirmationToken });
+  const save = async (draft, title, slug, publicPath) => (await site.read("cms.items.save",
+    { ...versioned(draft), values: { ...values(title, slug), public_path: publicPath } }, { headers: headers() })).item;
+  let first = await save(await createDraft(site, schemaRevision), "First", "first", "/archive/First");
+  const second = await save(await createDraft(site, schemaRevision), "Second", "second", "/profiles/second");
+  const literal = (path) => publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}/s/explicit-cms-paths${path}`, {
+    headers: { "Cache-Control": "no-cache" }
+  }), h.env);
+  const state = () => h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
+  const release = async (items, previous) => {
+    await site.read("cms.release.apply", await releasePlan(site, schemaRevision, previous, items));
+    await h.cron();
+    return (await site.read("cms.release.current")).snapshot.releaseId;
+  };
+
+  const reserve = h.sqlite.prepare("INSERT INTO managed_site_redirects (site_id, locale, from_path, to_path) VALUES (?, 'en', '/profiles/second', '/')");
+  reserve.run(site.siteId);
+  const rejected = await body(await site.post("cms.release.plan", {
+    schemaRevision, locale: "ja", routeTableRevision: (await site.read("cms.release.current")).routeTableRevision,
+    expectedReleaseId: null, items: [pin(first), pin(second)], redirects: []
+  }), 422);
+  assert.ok(rejected.problems.some(({ path, code }) => path === "/profiles/second" && code === "route"));
+  assert.equal(state(), null);
+  h.sqlite.prepare("DELETE FROM managed_site_redirects WHERE site_id = ?").run(site.siteId);
+
+  const initialRelease = await release([first, second], null);
+  const firstManifest = state();
+  assert.match(await (await literal("/archive/First")).text(), /<h1>First<\/h1>/u);
+  assert.match(await (await literal("/profiles/second")).text(), /<h1>Second<\/h1>/u);
+  assert.equal((await literal("/cms/posts/first")).status, 404);
+
+  first = await save(first, "First moved", "first", "/profiles/first");
+  const moved = await release([first, second], initialRelease);
+  assert.notEqual(state(), firstManifest);
+  const redirect = await literal("/archive/First");
+  assert.equal(redirect.status, 301);
+  assert.equal(redirect.headers.get("Location"), `${PUBLIC_ORIGIN}/s/explicit-cms-paths/profiles/first`);
+  assert.match(await (await literal("/profiles/first")).text(), /<h1>First moved<\/h1>/u);
+
+  await release([second], moved);
+  assert.equal((await literal("/archive/First")).status, 404);
+  assert.equal((await literal("/profiles/first")).status, 404);
+  assert.equal((await literal("/profiles/second")).status, 200);
+});
+
 testWithD1("Studio CMS renders only assets approved for the published revision", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "cms-assets");
