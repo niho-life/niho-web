@@ -6,6 +6,7 @@ import type { SiteStyles } from "../src/site-styles.js";
 import { renderPageHead, resolvePageMetadata, validatePagePath, type PageMetadata } from "../src/pages.js";
 import type { CmsPublicAsset, CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
+import { cmsRichTextNodes, decodeCmsReleaseRichText } from "./managed-cms-rich-text.js";
 import type { CmsStore } from "./managed-cms-store.js";
 import { emptyManagedPublicPolicy, managedBlockContracts, parseManagedPublicPolicy, type ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
@@ -307,6 +308,7 @@ export async function prepareManagedPagePublicationBatch(input: {
           const projected = bindings && snapshot
             ? resolveCmsPageBindings(document, bindings, { schema: snapshot.schema, items: snapshot.items }, {
               blocks: managedBlockContracts, page: { siteStyles },
+              richText: (value, newId) => cmsRichTextNodes(decodeCmsReleaseRichText(value), newId),
               ...(bindings.detail ? { detail: { slug: path.slice(target.path.length + 1) } } : {})
             })
             : document;

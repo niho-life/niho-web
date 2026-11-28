@@ -7,7 +7,7 @@ import { remapCarouselBinding } from "./carousel.js";
 
 export const cmsBindingAttributes = ["title", "aria-label", "alt", "dateTime"] as const;
 type BindingAttribute = typeof cmsBindingAttributes[number];
-type MappingTarget = { readonly target: "text" | "image" | "link" }
+type MappingTarget = { readonly target: "text" | "image" | "link" | "rich-text" }
   | { readonly target: "attribute"; readonly attribute: BindingAttribute }
   | { readonly target: "detail-link"; readonly path: string };
 export type CmsPageFieldBinding = { readonly nodeId: string; readonly fieldId: string } & MappingTarget;
@@ -37,6 +37,7 @@ export const CMS_PAGE_BINDINGS_MAX_BYTES = 64 * 1024;
 const fieldText = new Set(["text", "longText", "slug", "datetime"]);
 const textTags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a li dt dd strong em b i small blockquote figure figcaption time".split(" "));
 const listTags = new Set(["div", "article", "section", "li"]);
+const richTextTags = new Set(["div", "article", "section"]);
 const validSlug = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 
 function fieldBindings(input: unknown, path: string): CmsPageFieldBinding[] {
@@ -44,7 +45,7 @@ function fieldBindings(input: unknown, path: string): CmsPageFieldBinding[] {
     const at = path + "[" + index + "]", value = record(entry, at);
     keys(value, ["nodeId", "fieldId", "target", ...(value.target === "attribute" ? ["attribute"] : value.target === "detail-link" ? ["path"] : [])], at);
     const base = { nodeId: identifier(value.nodeId, at + ".nodeId"), fieldId: cmsId(value.fieldId, at + ".fieldId") };
-    if (value.target === "text" || value.target === "image" || value.target === "link") return { ...base, target: value.target };
+    if (value.target === "text" || value.target === "image" || value.target === "link" || value.target === "rich-text") return { ...base, target: value.target };
     if (value.target === "attribute") {
       if (!cmsBindingAttributes.includes(value.attribute as BindingAttribute)) fail(at + ".attribute", "unsupported CMS attribute");
       return { ...base, target: value.target, attribute: value.attribute as BindingAttribute };
@@ -106,6 +107,7 @@ function elementIndex(body: readonly PageNode[], templateIds: Set<string>, paren
 export function cmsPageFieldMatches(field: CmsField, binding: Pick<CmsPageFieldBinding, "target"> & { readonly attribute?: BindingAttribute }): boolean {
   if (binding.target === "image") return field.type === "image";
   if (binding.target === "link") return field.type === "url";
+  if (binding.target === "rich-text") return field.type === "richText";
   if (binding.target === "detail-link") return field.type === "slug";
   if (binding.attribute === "dateTime") return field.type === "datetime";
   return fieldText.has(field.type);
@@ -115,6 +117,8 @@ function validMappingNode(node: ElementNode, binding: CmsPageFieldBinding): bool
   if (node.embed || node.icon) return false;
   if (binding.target === "text") return textTags.has(node.tag) && node.children.every((child) => child.type === "text");
   if (binding.target === "image") return node.tag === "img";
+  // 本文は段落や見出しを含むため、区切りの要素の中身にします。元の中身は仮の文字だけにします。
+  if (binding.target === "rich-text") return richTextTags.has(node.tag) && node.children.every((child) => child.type === "text");
   if (binding.target === "link" || binding.target === "detail-link") return node.tag === "a";
   if (binding.target === "attribute" && binding.attribute === "alt") return node.tag === "img";
   if (binding.target === "attribute" && binding.attribute === "dateTime") return node.tag === "time";
@@ -162,7 +166,10 @@ export function cmsPageBindingProblems(page: PageDocument, bindings: CmsPageBind
 }
 
 type DetailSelection = { readonly slug: string } | { readonly itemId: string };
-type ProjectionOptions = { readonly detail?: DetailSelection; readonly blocks?: BlockContracts; readonly page?: PageParseOptions };
+/** richText の値を要素へ変える処理は、HTML の解析と許可する要素を持つ host が渡します。ID は `newId` で作ります。 */
+export type CmsRichTextProjection = (value: string, newId: () => string) => PageNode[];
+type ProjectionOptions = { readonly detail?: DetailSelection; readonly blocks?: BlockContracts; readonly page?: PageParseOptions;
+  readonly richText?: CmsRichTextProjection };
 
 function listItems(list: CmsPageListBinding, items: readonly CmsItemRevision[], schema: CmsSchema): CmsItemRevision[] {
   const { filter } = list;
@@ -183,7 +190,7 @@ function listItems(list: CmsPageListBinding, items: readonly CmsItemRevision[], 
   }).slice(0, list.limit);
 }
 
-function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: CmsItemRevision): void {
+function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: CmsItemRevision, richText: (value: string) => PageNode[]): void {
   const value = item.values[binding.fieldId];
   if (value === null || value === undefined) return;
   switch (binding.target) {
@@ -197,6 +204,9 @@ function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: Cms
     }
     case "text":
       node.children = [{ type: "text", text: string(value, "$binding.text", 100000) }];
+      return;
+    case "rich-text":
+      node.children = value === "" ? [] : richText(string(value, "$binding.richText", 2_000_000));
       return;
     case "link":
       if (value === "") {
@@ -247,6 +257,9 @@ export function resolveCmsPageBindings(page: PageDocument, input: unknown, sourc
     used.add(id);
     return id;
   }
+  function richText(value: string): PageNode[] {
+    return options.richText ? options.richText(value, newId) : fail("$bindings", "CMS rich-text binding requires a rich-text projection");
+  }
   function projectNode(node: PageNode, item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: Map<string, string> | undefined): PageNode {
     if (++count > 5000) fail("$bindings", "CMS page exceeds the node limit");
     if (node.type !== "element") return node;
@@ -258,7 +271,7 @@ export function resolveCmsPageBindings(page: PageDocument, input: unknown, sourc
         copy.interaction = { type: "carousel", binding: remapCarouselBinding(copy.interaction.binding, (id) => repeated.get(id) ?? id) };
       }
     }
-    if (item) for (const binding of fields) if (binding.nodeId === node.id) applyMapping(copy, binding, item);
+    if (item) for (const binding of fields) if (binding.nodeId === node.id) applyMapping(copy, binding, item, richText);
     return copy;
   }
   function project(nodes: readonly PageNode[], item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: Map<string, string> | undefined): PageNode[] {

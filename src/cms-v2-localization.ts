@@ -183,9 +183,12 @@ function localizationCollection(collection: Pick<CmsLocalizationCollection, "ide
       message: `CMS field ${fieldId} requires the host rich-text adapter.` })) };
 }
 
+/** NIHO Web Studio は本文を HTML のまま編集するため、翻訳も HTML を1つの単位にします。 */
+export const STUDIO_CMS_LOCALIZATION_OPTIONS = { richText: "html-source" } as const;
+
 /** Extract localizable CMS fields. Rich text requires the host's safe parser; all other CMS values remain unchanged. */
 export async function collectCmsLocalizationUnits(schemaInput: unknown, itemInput: unknown, targetLocaleInput: unknown,
-  options: { readonly richText?: CmsLocalizationRichTextAdapter } = {}): Promise<CmsLocalizationCollection> {
+  options: { readonly richText?: CmsLocalizationRichTextAdapter | "html-source" } = {}): Promise<CmsLocalizationCollection> {
   const schema = parseCmsSchema(schemaInput), item = parseCmsItemRevision(itemInput, schema);
   const source = localizationFamily(item.locale, "$item.locale"), target = localizationFamily(targetLocaleInput, "$targetLocale");
   if (source.locale === target.locale || source.family === target.family) fail("$targetLocale", "target locale must differ from source locale");
@@ -206,7 +209,14 @@ export async function collectCmsLocalizationUnits(schemaInput: unknown, itemInpu
       continue;
     }
     if (field.type !== "richText" || typeof raw !== "string" || raw === "") continue;
-    if (!options.richText) { issues.push({ fieldId: field.fieldId, code: "RICH_TEXT_ADAPTER_REQUIRED" }); continue; }
+    if (options.richText === "html-source" && raw.length <= MAX_SOURCE_TEXT) {
+      // 本文の HTML をそのまま1つの訳す単位にします。公開の安全性は、公開時の HTML の変換で確保します。
+      const identityWithField = { ...identity, fieldId: field.fieldId };
+      fields.push({ identity: identityWithField, unitId: unitId(field.fieldId), label: field.label, kind: "text", sourceValue: raw,
+        sourceFingerprint: await hash({ identity: identityWithField, schemaRevision: schema.schemaRevision, sourceValue: raw }) });
+      continue;
+    }
+    if (!options.richText || options.richText === "html-source") { issues.push({ fieldId: field.fieldId, code: "RICH_TEXT_ADAPTER_REQUIRED" }); continue; }
     const parsed = record(options.richText.parse(raw, field), `item.values.${field.fieldId}`);
     keys(parsed, ["value", "sourceHtml"], `item.values.${field.fieldId}`);
     const sourceValue = parseLocalizationValue(parsed.value, "rich-text", `item.values.${field.fieldId}`) as LocalizedRichText;

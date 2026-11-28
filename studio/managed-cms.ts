@@ -3,7 +3,7 @@ import {
   cmsLegacyCollections, cmsRoleCapabilities, cmsWorkspaceItem, discoverCmsContract, parseCmsApplyInput,
   parseCmsDraftWrite, parseCmsReleaseInput, parseCmsScheduleRequest, parseCmsSchemaPlanInput,
   planCmsMigrationWithRouteTables, planCmsRelease, planCmsSchedule, revalidateCmsRelease,
-  cmsLocalizationItemKey, cmsLocalizationStatus, collectCmsLocalizationUnits, materializeCmsLocalizedItem,
+  cmsLocalizationItemKey, cmsLocalizationStatus, collectCmsLocalizationUnits, materializeCmsLocalizedItem, STUDIO_CMS_LOCALIZATION_OPTIONS,
   createCmsLocalizationOverlay, editCmsLocalizedValue, parseCmsLocalizationItemKey, parseCmsLocalizationOverlay,
   reviewCmsLocalizedValue, type CmsItemRevision, type CmsLocalizationOverlay, type CmsSchema,
   type CmsMigrationDraft, type CmsProblem, type CmsReleaseInput, type CmsReleaseProposal, type CmsRouteBoundMigration,
@@ -127,7 +127,7 @@ async function cmsLocalizationView(store: CmsStore, site: Site, collectionId: st
   const source = publishedPin ? await store.item(site.siteId, draftSource.locale, publishedPin) : draftSource;
   const sourceSchema = publishedPin ? publishedSnapshot!.schema : site.state.schema;
   const sourceDraftPending = !publishedPin || draftSource.revision !== publishedPin.revision;
-  const collection = await collectCmsLocalizationUnits(sourceSchema, source, targetLocale);
+  const collection = await collectCmsLocalizationUnits(sourceSchema, source, targetLocale, STUDIO_CMS_LOCALIZATION_OPTIONS);
   const overlay = await cmsLocalizationOverlay(store, site, collection);
   return { schema: sourceSchema, source, sourceDraftPending, collection, overlay, updatedAt: meta.updatedAt };
 }
@@ -524,7 +524,7 @@ export async function planCmsLocalizationRelease(input: {
   for (let index = 0; index < input.sourceItems.length; index++) {
     const source = input.sourceItems[index]!, overlay = input.overlays[index]!, target = input.targetRevisions[index]!;
     if (target.collectionId !== source.collectionId || target.itemId !== source.itemId) return { status: "conflict" };
-    const collection = await collectCmsLocalizationUnits(input.schema, source, input.targetLocale);
+    const collection = await collectCmsLocalizationUnits(input.schema, source, input.targetLocale, STUDIO_CMS_LOCALIZATION_OPTIONS);
     const status = cmsLocalizationStatus(overlay, collection);
     if (!status.complete) {
       const stateByUnit = new Map(status.details.map(({ unitId, state }) => [unitId, state]));
@@ -576,7 +576,7 @@ async function localizationReleaseOperation(store: CmsStore, site: Site, operati
     const sourceSnapshot = await currentSnapshot(store, site);
     if (sourceSnapshot && sourceSnapshot.locale !== site.state.locale) return conflict();
     const sourceItems = sourceSnapshot ? await Promise.all(sourceSnapshot.items.map((pin) => store.item(site.siteId, site.state.locale, pin))) : [];
-    const collections = await Promise.all(sourceItems.map((item) => collectCmsLocalizationUnits(site.state.schema, item, targetLocale)));
+    const collections = await Promise.all(sourceItems.map((item) => collectCmsLocalizationUnits(site.state.schema, item, targetLocale, STUDIO_CMS_LOCALIZATION_OPTIONS)));
     const overlays = await Promise.all(collections.map((collection) => cmsLocalizationOverlay(store, site, collection)));
     const targetRevisions = sourceItems.map((item) => ({ collectionId: item.collectionId, itemId: item.itemId, revision: opaque("rev") }));
     const context = await localizationReleaseContext(store, site, targetLocale);

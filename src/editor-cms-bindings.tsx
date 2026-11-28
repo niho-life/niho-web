@@ -6,7 +6,7 @@ import type { EditorCmsBindingsAdapter, EditorTarget } from "./editor-types.js";
 import type { PageDocument } from "./types.js";
 
 const mappingLabels: Record<CmsPageFieldBinding["target"], string> = {
-  text: "テキスト", image: "画像", link: "リンク", "detail-link": "詳細ページへのリンク", attribute: "属性"
+  text: "テキスト", "rich-text": "本文（書式付き）", image: "画像", link: "リンク", "detail-link": "詳細ページへのリンク", attribute: "属性"
 };
 type Catalog = Awaited<ReturnType<EditorCmsBindingsAdapter["read"]>>;
 type Props = {

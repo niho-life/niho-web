@@ -74,7 +74,7 @@ const nullable = (schema: JsonSchema): JsonSchema => either(schema, constant(nul
 const cmsIdentifier: JsonSchema = { type: "string", pattern: "^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$" };
 const cmsMappingFields = { nodeId: id, fieldId: cmsIdentifier };
 const cmsFieldBindings = list(either(
-  obj({ ...cmsMappingFields, target: valuesOf(["text", "image", "link"]) }),
+  obj({ ...cmsMappingFields, target: valuesOf(["text", "rich-text", "image", "link"]) }),
   obj({ ...cmsMappingFields, target: constant("attribute"), attribute: valuesOf(cmsBindingAttributes) }),
   obj({ ...cmsMappingFields, target: constant("detail-link"), path: text })
 ), 0, 80);

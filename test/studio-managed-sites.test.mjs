@@ -2741,6 +2741,56 @@ testWithD1("External CMS delivery links committed events, immutable snapshots an
   assert.deepEqual(audit.map(({ operation }) => operation), ["cms.delivery.credential.issued", "cms.delivery.credential.revoked"]);
 });
 
+testWithD1("Kamakura import publishes rich text bodies and their translations as formatted HTML", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-rich-text");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = await site.read("cms.schema.read");
+  const origin = "https://migration-rich.example.test", siteId = "fixture-rich";
+  const richBody = '<h2 id="index_intro">見出し</h2><p>本文の<a href="https://example.test/">リンク</a></p><script>unsafe()</script>';
+  const translatedBody = '<h2 id="index_intro">Heading</h2><p>Body with a <a href="https://example.test/">link</a></p>';
+  const reviewed = { title: { value: "Translated title", reviewed: true }, slug: { value: "translated", reviewed: true },
+    body: { value: translatedBody, reviewed: true } };
+  const itemValues = { title: "記事", slug: "story", body: richBody };
+  const document = (pageId, locale, title, nodes = []) => ({ document: { schemaVersion: 1, siteId, pageId, locale, revision: 1, title, tokens: {}, body: nodes } });
+  const template = (pageId, locale) => ({ ...document(pageId, locale, "記事", [{ type: "component", id: "detail", block: "KamakuraCmsDetail", props: {} }]),
+    sourceBlocks: { KamakuraCmsDetail: { props: {} } }, replacements: [{ nodeId: "detail", kind: "cms-detail",
+      body: [{ type: "element", id: "story-body", tag: "div", children: [] }],
+      binding: { collectionId: "posts", slugFieldId: schema.collections[0].slugField,
+        fields: [{ nodeId: "story-body", fieldId: "body", target: "rich-text" }] } }] });
+  const page = (path, locale, sourcePageId, version) => ({ sourceUrl: origin + path, sourcePageId, path, locale, visibility: "public",
+    published: version, draft: version });
+  const source = { formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
+    pages: [page("/", "ja", "home-source", document("home-source", "ja", "Home")),
+      page("/stories", "ja", "stories-source", template("stories-source", "ja")),
+      page("/en/stories", "en", "stories-en-source", template("stories-en-source", "en"))],
+    cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => ({ ...collection,
+      fields: collection.fields.map((field) => field.fieldId === "body" ? { fieldId: "body", key: "body", label: "本文", type: "richText", placement: "main" } : field) })) },
+      items: [{ collectionId: "posts", itemId: "story", published: itemValues, draft: itemValues,
+        translations: { targetLocale: "en", published: reviewed, draft: reviewed } }] },
+    redirects: [], scheduled: [] };
+  const bytes = Buffer.from(JSON.stringify(source));
+  const prepared = await prepareKamakuraSiteImport(bytes, createHash("sha256").update(bytes).digest("hex"), target);
+  await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  await finalizeKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  assert.equal((await site.read("cms.localization.release.current")).snapshot.items.length, 1);
+  const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
+  const pending = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.publication-changes"), 200);
+  assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "POST", operations + "site.publish",
+    { expectedVersion: pending.version, scope: "all" }), 200)).status, "released");
+  const publicHtml = async (path) => {
+    const response = await publishedSiteRequest(new Request(`${target.verificationOrigin}/s/migration-rich-text${path}`,
+      { headers: { "Cache-Control": "no-cache" } }), h.env);
+    assert.equal(response.status, 200, path);
+    return response.text();
+  };
+  for (const [path, heading] of [["/stories/story", "見出し"], ["/en/stories/translated", "Heading"], ["/cms/posts/story", "見出し"]]) {
+    const html = await publicHtml(path);
+    assert.match(html, new RegExp(`<h2 [^>]*id="index_intro"[^>]*>${heading}</h2>`, "u"), path);
+    assert.match(html, /<a [^>]*href="https:\/\/example\.test\/"/u, path);
+    assert.doesNotMatch(html, /&lt;h2|unsafe\(\)/u, path);
+  }
+});
+
 testWithD1("Kamakura import finalize rejects an item path that collides with a translated item path", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-collision");
   const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };

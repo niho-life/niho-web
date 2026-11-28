@@ -1,5 +1,5 @@
 import { assetKey, uniqueAssetReferences } from "../src/assets.js";
-import { collectCmsLocalizationUnits, createCmsLocalizationOverlay, parseCmsLocalizationOverlay, cmsLocalizationItemKey } from "../src/cms-v2-localization.js";
+import { collectCmsLocalizationUnits, createCmsLocalizationOverlay, parseCmsLocalizationOverlay, cmsLocalizationItemKey, STUDIO_CMS_LOCALIZATION_OPTIONS } from "../src/cms-v2-localization.js";
 import { cmsReleaseAssetUses } from "../src/cms-v2-assets.js";
 import { planCmsRelease } from "../src/cms-v2.js";
 import { cmsArray, cmsCollection, cmsId, cmsItemKey, parseCmsValues, type CmsItemRevision } from "../src/cms-v2-schema.js";
@@ -370,7 +370,7 @@ async function finalizeImport(scope: Scope, verified: boolean) {
   const sourceItems = await Promise.all(pins.map((pin) => store.item(target.siteId, site.state.locale, pin)));
   const translated = new Map(items.map((item) => [cmsItemKey(item), item.publishedLocalizationRevision ?? null]));
   const overlays = await Promise.all(sourceItems.map(async (item) => {
-    const units = await collectCmsLocalizationUnits(site.state.schema, item, targetLocale), revision = translated.get(cmsItemKey(item));
+    const units = await collectCmsLocalizationUnits(site.state.schema, item, targetLocale, STUDIO_CMS_LOCALIZATION_OPTIONS), revision = translated.get(cmsItemKey(item));
     if (!revision) return createCmsLocalizationOverlay(units);
     const blob = await store.bucket.get(localizationBlobKey(target.siteId, targetLocale, cmsLocalizationItemKey(item.collectionId, item.itemId), revision));
     if (!blob) throw new Error("migration translation unavailable");

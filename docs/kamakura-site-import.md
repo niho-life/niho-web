@@ -18,11 +18,11 @@ Studio で検証用の新規 Project を作成し、移行元の原文 locale �
 | `assets` | `{ source: { provider, id }, url, width, height, altText, contentSha256, byteLength, aliases? }` の配列。`url` は現行の公開原本 URL、`aliases` は同じ ID に対する旧 URL・変換画像 URL。`width` と `height` が不明なら `null`。原本は各 32 MiB まで |
 | `assetVariants` | 派生素材に別 ID がある場合の `{ source, original }` の配列。両方とも `{ provider, id }`。`original` は `assets` の元素材 ID |
 | `cms` | `null` または `{ schema, items }`。schema は移行元サイトの [CMS v2 定義](cms-v2-contract.md)。項目は `{ collectionId, itemId, published, draft, translations? }`、`published` / `draft` は field ID → 値のオブジェクト。未公開なら `published: null` |
-| `cms.items[].translations` | `{ targetLocale, published, draft }`。各版は `null`、または field ID → `{ value, reviewed }`。Studio の CMS 翻訳が対応するテキスト field を指定する。`reviewed` は元の対応版で確認済みだった場合に限る |
+| `cms.items[].translations` | `{ targetLocale, published, draft }`。各版は `null`、または field ID → `{ value, reviewed }`。Studio の CMS 翻訳が対応するテキスト field と `richText` field を指定する。`richText` の `value` は訳した本文の HTML（100,000 文字まで）。`reviewed` は元の対応版で確認済みだった場合に限る |
 | `redirects` | Studio の `{ locale, fromPath, toPath }` の配列。次回公開に使う redirect 正本に取込む |
 | `scheduled` | `{ kind: "page", sourceUrl, at }` または `{ kind: "cms", collectionId, itemId, at }` の配列。`at` は RFC 3339 の日時。元予約の情報を検証用計画へ保持し、公開予約ジョブは作成しない |
 
-地図、カレンダー、旧 iframe、カルーセル、フォーム、CMS 一覧・詳細を含む版には、必要な `sourceBlocks`, `presentation`, `replacements`, `frameOrigins` も付ける。`replacement.kind` は `frame`、`carousel`、`managed-embed`、`cms-list`、`cms-detail` が使える。CMS の recipe はエクスポート内の `cms.schema` と同じ collection・field ID を参照し、公開版と下書き版それぞれに指定する。変換不能・レシピ不足・CMS schema 不整合があれば、取り込み全体を確定せず停止する。CMS bindings は対応する PageDocument 版の `managed_page_versions.bindings_json` に保存する。[鎌倉専用ブロックの移行](kamakura-block-migration.md)
+地図、カレンダー、旧 iframe、カルーセル、フォーム、CMS 一覧・詳細を含む版には、必要な `sourceBlocks`, `presentation`, `replacements`, `frameOrigins` も付ける。`replacement.kind` は `frame`、`carousel`、`managed-embed`、`cms-list`、`cms-detail` が使える。CMS の recipe はエクスポート内の `cms.schema` と同じ collection・field ID を参照し、公開版と下書き版それぞれに指定する。変換不能・レシピ不足・CMS schema 不整合があれば、取り込み全体を確定せず停止する。CMS bindings は対応する PageDocument 版の `managed_page_versions.bindings_json` に保存する。`richText` field は `target: "rich-text"` で結び付ける（`text` では HTML がそのまま文字で表示される）。[鎌倉専用ブロックの移行](kamakura-block-migration.md)
 
 フォーム接続が必要な場合は別の作業ファイルを `--embed-connections` で渡す。内容は `{ sourceUrl, refId, src }` の配列。`refId` は本文変換で指定する接続 ID と一致させ、`src` は検証 origin と `/s/{slug}` 以下の対象ページに対して発行された接続 URL を使う。あらかじめ対象サイトの公開配信設定へ埋め込み origin を登録する。接続 URL は Studio の既存のページ接続設定に保存され、PageDocument と対応表には `src` を含めない。[ManagedEmbed の契約](managed-embed-contract.md)
 

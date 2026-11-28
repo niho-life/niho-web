@@ -5,6 +5,7 @@ import { prepareManagedCmsStaticRoutes } from "./managed-cms-static.js";
 import { MAX_MANAGED_PAGE_BYTES, readPageSource, readPageSourceObject, storePageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parsePageDocument, type PageDocument } from "../src/core.js";
 import { cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
+import { cmsRichTextNodes } from "./managed-cms-rich-text.js";
 import { cmsId, cmsItemKey } from "../src/cms-v2-schema.js";
 import type { CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { isEditingApiVersion } from "../src/editing-client.js";
@@ -628,7 +629,7 @@ async function cmsBindingPreview(request: Request, store: CmsStore, site: Site, 
   const item = await store.item(site.siteId, site.state.locale, pin);
   let projected: PageDocument | null;
   try { projected = resolveCmsPageBindings(document, bindings, { schema: site.state.schema, items: [item] }, {
-    detail: { itemId: item.itemId }, blocks: managedBlockContracts, page: { siteStyles }
+    detail: { itemId: item.itemId }, blocks: managedBlockContracts, page: { siteStyles }, richText: cmsRichTextNodes
   }); }
   catch { return json({ error: "invalid_cms_binding_values" }, 422); }
   if (!projected || !await store.consumePreview(site, body.previewId, "page-preview")) return json({ error: "not_found" }, 404);

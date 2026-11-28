@@ -28,6 +28,31 @@ const presentation = { subtitle: null, imageUrl: null, path: null, updatedAt: no
 const digest = (input) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
 const pin = ({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision });
 
+test("CMS rich-text bindings replace a text placeholder only through the host projection", () => {
+  const model = schema(), pageId = "article";
+  const article = parseCmsItemRevision({ ...post, siteId, schemaRevision: model.schemaRevision, revision: "rev-rich", values: {
+    "field-title": "Story", "field-slug": "story", "field-body": "<h2>Heading</h2>"
+  } }, model);
+  const page = parsePageDocument({ schemaVersion: 1, siteId, pageId, locale, revision: 1, title: "Story", tokens: {}, body: [
+    { type: "element", tag: "div", id: "story-body", children: [{ type: "text", text: "本文の位置" }] },
+    { type: "element", tag: "p", id: "story-paragraph", children: [] }
+  ] });
+  const bindings = { schemaVersion: 1, siteId, pageId, locale, lists: [], detail: { collectionId: "posts", slugFieldId: "field-slug",
+    fields: [{ nodeId: "story-body", target: "rich-text", fieldId: "field-body" }] } };
+  const source = { schema: model, items: [article] }, detail = { slug: "story" };
+  assert.throws(() => resolveCmsPageBindings(page, bindings, source, { detail }), /rich-text projection/u);
+  const projected = resolveCmsPageBindings(page, bindings, source, { detail,
+    richText: (value, newId) => [{ type: "element", id: newId(), tag: "h2", children: [{ type: "text", text: value }] }] });
+  assert.equal(projected.body[0].children[0].tag, "h2");
+  assert.equal(projected.body[0].children[0].children[0].text, "<h2>Heading</h2>");
+  const paragraph = structuredClone(bindings);
+  paragraph.detail.fields[0].nodeId = "story-paragraph";
+  assert.throws(() => resolveCmsPageBindings(page, paragraph, source, { detail }), /要素または属性が無効/u);
+  const wrongField = structuredClone(bindings);
+  wrongField.detail.fields[0].fieldId = "field-title";
+  assert.throws(() => resolveCmsPageBindings(page, wrongField, source, { detail }), /型が一致しません/u);
+});
+
 test("CMS page projection filters single selects and resolves only approved asset references", () => {
   const model = schema(), pageId = "articles", cover = { provider: "cms-fixture", id: "cover-1" };
   const article = parseCmsItemRevision({ ...post, siteId, schemaRevision: model.schemaRevision, revision: "rev-1", values: {
