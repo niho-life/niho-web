@@ -6,7 +6,7 @@ import { loadPublishedSiteManifest, preparePublishedManifest, type PreparedPubli
 import { prepareManagedCmsStaticRoutes } from "./managed-cms-static.js";
 import { MAX_MANAGED_PAGE_BYTES, readPageSource, readPageSourceObject, storePageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parsePageDocument, type PageDocument } from "../src/core.js";
-import { cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
+import { cmsDetailBaseInvalid, cmsDetailBasePath, cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
 import { cmsRichTextProjection } from "./managed-cms-rich-text.js";
 import { cmsId, cmsItemKey } from "../src/cms-v2-schema.js";
 import type { CmsItemRevision, CmsReleaseSnapshot } from "../src/cms-v2.js";
@@ -588,7 +588,7 @@ async function cmsSite(store: CmsStore | undefined, actor: ManagedActor, row: Ma
 function pageBindings(input: unknown, page: PageDocument, path: string): CmsPageBindingsDocument | null {
   if (input === null) return null;
   const bindings = parseCmsPageBindings(input, page);
-  if (bindings.detail && (path === "/" || validatePagePath(path + "/item") !== null)) throw new Error("詳細ページの URL を設定してください。");
+  if (bindings.detail && cmsDetailBaseInvalid(cmsDetailBasePath(bindings.detail, path))) throw new Error("詳細ページの URL を設定してください。");
   return bindings.lists.length || bindings.detail ? bindings : null;
 }
 
@@ -1184,10 +1184,11 @@ async function managedPublicationSnapshot(store: CmsStore, actor: ManagedActor, 
     const wasPublic = routeKeys.has(key) || !manifest && page.published_revision !== null && page.visibility === "public";
     const publishedRoute = manifest?.routes.find((route) => route.pageId === page.page_id && route.locale === page.locale);
     const publishedPath = publishedRoute?.sourcePath ?? publishedRoute?.path ?? page.published_path;
+    const livePath = detailBasePathOf(page.current_bindings_json) ?? page.path;
     let reason: "new" | "draft" | "path" | "visibility" | null = null;
     if (page.visibility === "private" && wasPublic || page.visibility === "public" && !wasPublic && page.published_revision !== null) reason = "visibility";
     else if (page.visibility === "public" && !wasPublic && page.published_revision === null) reason = "new";
-    else if (page.visibility === "public" && wasPublic && publishedPath !== undefined && publishedPath !== page.path) reason = "path";
+    else if (page.visibility === "public" && wasPublic && publishedPath !== undefined && publishedPath !== livePath) reason = "path";
     else if (page.visibility === "public" && (!wasPublic || page.published_revision === null || page.current_revision !== (publishedRoute?.sourceRevision ?? page.published_revision))) reason = page.published_revision === null ? "new" : "draft";
     if (reason) changes.push({ kind: "page", target: { siteId, pageId: page.page_id, locale: page.locale }, title: page.title, path: page.path, reason });
   }
@@ -1227,6 +1228,15 @@ function publicationSource(page: ManagedPublicationCandidate, current: boolean):
 
 function publicationBindings(page: ManagedPublicationCandidate, current: boolean): string | null {
   return current ? page.current_bindings_json : page.published_bindings_json;
+}
+
+/** 保存済みの結び付け JSON から、詳細の親パス（あれば）を読む。 */
+function detailBasePathOf(bindingsJson: string | null): string | undefined {
+  if (!bindingsJson) return undefined;
+  try {
+    const basePath = (JSON.parse(bindingsJson) as { detail?: { basePath?: unknown } }).detail?.basePath;
+    return typeof basePath === "string" ? basePath : undefined;
+  } catch { return undefined; }
 }
 
 function publicationRoute(page: Pick<ManagedPublicationCandidate, "page_id" | "locale">, manifest: PublishedSiteManifest | null) {
@@ -1297,7 +1307,7 @@ async function prepareManagedPublishedPageMutation(store: CmsStore, edition: Man
       : !pageIsPublished(page, publishedKeys, edition.manifest !== null)) continue;
     const route = publicationRoute(page, edition.manifest);
     const previousPath = route?.sourcePath ?? route?.path ?? page.published_path ?? page.path;
-    const path = selected ? mutation.path : previousPath;
+    let path = selected ? mutation.path : previousPath;
     try {
       const source = publicationSource(page, false);
       if (!source) throw new Error("missing published page source");
@@ -1305,6 +1315,8 @@ async function prepareManagedPublishedPageMutation(store: CmsStore, edition: Man
       const pinned = route ? await historicalPublishedSource(store, version, route.sourceRevision) : version;
       const identity = { siteId, pageId: page.page_id, locale: page.locale };
       const bindings = pinned.bindings_json ? parseCmsPageBindings(JSON.parse(pinned.bindings_json), identity) : null;
+      // 詳細の親パスがあれば、ページ自身のパスを変えても項目の公開 URL は動かない。
+      if (bindings?.detail?.basePath !== undefined) path = bindings.detail.basePath;
       const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
       const cms = !bindings ? null : releaseId ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId)
         // 取込で確定して公開記録がまだないページは、現在の CMS release で生成する。
@@ -1411,7 +1423,8 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
       const source = publicationSource(page, current);
       if (!source) continue;
       const route = current ? undefined : publicationRoute(page, edition.manifest);
-      const path = current ? page.path : route?.sourcePath ?? route?.path ?? page.published_path ?? page.path;
+      const pagePath = current ? page.path : route?.sourcePath ?? route?.path ?? page.published_path ?? page.path;
+      let path = pagePath;
       try {
         const version = { ...source, bindings_json: publicationBindings(page, current) };
         const pinned = route ? await historicalPublishedSource(store, version, route.sourceRevision) : version;
@@ -1424,6 +1437,8 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
           : releaseId ? cmsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : undefined : undefined;
         if (bindings && (!cms || cms.locale !== page.locale)) throw new Error("missing CMS release");
         if (cms) cmsById.set(cms.releaseId, cms);
+        // 項目の URL は詳細の親パス基準。ページ自身のパスは公開しない。
+        if (bindings?.detail) path = cmsDetailBasePath(bindings.detail, pagePath);
         targets.push({ ...target, path, public: current ? page.visibility === "public" : true, sourceRevision: route?.sourceRevision ?? source.revision,
           ...(bindings ? { bindings } : {}), ...(cms ? { cmsSnapshot: cms } : {}),
           readDocument: async () => {
@@ -1435,7 +1450,7 @@ async function publishManagedPages(store: CmsStore, actor: ManagedActor, project
         // 公開中のまま新しい CMS release で作り直したページは、その release の公開記録を足す。
         if (!current && !unrecorded && !(cmsBound && (route?.sourceRevision ?? source.revision) === page.published_revision)) continue;
         const row: ManagedPageRow = { ...source, project_id: page.project_id, site_id: page.site_id, slug: page.slug,
-          public_domain: page.public_domain, cms_locale: page.cms_locale, title: page.title, path, visibility: page.visibility,
+          public_domain: page.public_domain, cms_locale: page.cms_locale, title: page.title, path: pagePath, visibility: page.visibility,
           current_version: page.current_version, page_catalog_version: page.page_catalog_version, current_revision: page.current_revision,
           published_revision: page.published_revision, bindings_json: bindingsJson };
         writes.push({ row, expectedVersion: page.current_version, sourceRevision: source.revision, revision: source.revision,
@@ -1666,12 +1681,12 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
       if (problems.length) return json({ error: "invalid_cms_bindings", problems }, 422);
       try {
         if (bindings.detail) {
-          const { collectionId, slugFieldId } = bindings.detail, slugs = new Set<string>();
+          const { collectionId, slugFieldId } = bindings.detail, slugs = new Set<string>(), basePath = cmsDetailBasePath(bindings.detail, row.path);
           for (const item of released.items.filter((entry) => entry.collectionId === collectionId)) {
             const slug = item.values[slugFieldId];
             if (typeof slug !== "string" || !CMS_DETAIL_SLUG.test(slug)
-              || validatePagePath(`${row.path}/${slug.toLowerCase()}`) !== null || slugs.has(slug)) throw new Error("invalid detail URL");
-            const detailPath = `${row.path}/${slug}`;
+              || validatePagePath(`${basePath}/${slug.toLowerCase()}`) !== null || slugs.has(slug)) throw new Error("invalid detail URL");
+            const detailPath = `${basePath}/${slug}`;
             if (routes.reservations.some((reservation) => reservation.kind === "template"
               ? matchesTemplatePath(reservation.path, detailPath) : reservation.path === detailPath)) throw new Error("reserved detail URL");
             slugs.add(slug);

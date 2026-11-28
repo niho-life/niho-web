@@ -3381,3 +3381,105 @@ testWithD1("Studio CLI file sync pulls, pushes and publishes through the Studio 
   assert.deepEqual(last().result.saved, []);
   assert.equal(await readFile(join(dir, "pages/ja/home.json"), "utf8"), before);
 });
+
+testWithD1("Studio list page and bound detail share a path through detail.basePath, and moving it moves the item URLs", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "base-path");
+  const api = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
+  const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
+  const lookup = (path) => h.send(PUBLIC_ORIGIN, "GET", "/s/base-path" + path, undefined,
+    { auth: false, headers: { "Cache-Control": "no-cache" } });
+  const schema = await site.read("cms.schema.read");
+  const items = [];
+  for (let number = 1; number <= 3; number++) {
+    const item = await createDraft(site, schema.schemaRevision);
+    items.push((await site.read("cms.items.save", { ...versioned(item), values: values("Article " + number, "article-" + number) }, { headers: headers() })).item);
+  }
+  await site.read("cms.release.apply", await releasePlan(site, schema.schemaRevision, null, items));
+  await h.cron();
+
+  const element = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
+  const text = (value) => [{ type: "text", text: value }];
+  const publish = async (pageId, saved) => browser("POST", "/" + pageId + "/publish", { expectedVersion: saved.version, action: "publish" });
+
+  // 詳細ページは内部のパスに置く。basePath が不正なら保存できない。
+  const { page: detailPage } = await pageChange(browser, { action: "create", siteId: site.siteId, locale: "ja", title: "Detail", path: "/article-detail" });
+  const detail = await body(await browser("GET", "/" + detailPage.pageId), 200);
+  const detailDocument = { ...detail.document, body: [element("article-title", "h1", text("Title"))] };
+  const detailBindings = (basePath) => ({ schemaVersion: 1, siteId: site.siteId, pageId: detailPage.pageId, locale: "ja", lists: [],
+    detail: { collectionId: "posts", slugFieldId: "slug", ...(basePath === undefined ? {} : { basePath }),
+      fields: [{ nodeId: "article-title", fieldId: "title", target: "text" }] } });
+  for (const invalid of ["/", "/cms/x", "/articles/"]) {
+    assert.equal((await browser("PUT", "/" + detailPage.pageId + "/draft", { expectedVersion: detail.version, document: detailDocument,
+      cmsBindings: detailBindings(invalid) })).status, 422, invalid);
+  }
+  const detailSaved = await body(await browser("PUT", "/" + detailPage.pageId + "/draft", { expectedVersion: detail.version,
+    document: detailDocument, cmsBindings: detailBindings("/articles") }), 200);
+  const detailPublished = await body(await publish(detailPage.pageId, detailSaved), 200);
+
+  // 同じパスの一覧ページ。
+  const { page: listPage } = await pageChange(browser, { action: "create", siteId: site.siteId, locale: "ja", title: "List", path: "/articles" });
+  const list = await body(await browser("GET", "/" + listPage.pageId), 200);
+  const listDocument = { ...list.document, body: [element("article-preview", "article", [element("article-link", "a", text("Placeholder"), { href: "/articles" })])] };
+  const listBindings = { schemaVersion: 1, siteId: site.siteId, pageId: listPage.pageId, locale: "ja", lists: [{ templateNodeId: "article-preview",
+    collectionId: "posts", limit: 6, fields: [{ nodeId: "article-link", fieldId: "title", target: "text" },
+      { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" }] }] };
+  const listSaved = await body(await browser("PUT", "/" + listPage.pageId + "/draft", { expectedVersion: list.version, document: listDocument, cmsBindings: listBindings }), 200);
+  await body(await publish(listPage.pageId, listSaved), 200);
+
+  const listHtml = await lookup("/articles");
+  assert.equal(listHtml.status, 200);
+  assert.match(await listHtml.text(), /href="(?:\/s\/base-path)?\/articles\/article-1"/u);
+  const detailHtml = await lookup("/articles/article-1");
+  assert.equal(detailHtml.status, 200);
+  assert.match(await detailHtml.text(), /Article 1/u);
+  assert.equal((await lookup("/article-detail")).status, 404, "the internal detail page path is not public");
+
+  // basePath を変えると項目の URL が移り、旧 URL は 404 になる。redirect の表は変わらない。
+  const redirectsBefore = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/redirects`), 200);
+  const moved = await body(await browser("PUT", "/" + detailPage.pageId + "/draft", { expectedVersion: detailPublished.snapshot.version,
+    document: { ...detailDocument, revision: detailPublished.snapshot.document.revision }, cmsBindings: detailBindings("/articles2") }), 200);
+  const collision = { action: "create", siteId: site.siteId, locale: "ja", title: "Static", path: "/articles2/article-2" };
+  const { page: staticPage } = await pageChange(browser, collision);
+  assert.equal((await publish(detailPage.pageId, moved)).status, 422, "a fixed page on a detail URL blocks publication");
+  await pageChange(browser, { action: "update", target: { siteId: site.siteId, pageId: staticPage.pageId, locale: "ja" }, title: "Static", path: "/static-article" });
+  await body(await publish(detailPage.pageId, moved), 200);
+  assert.equal((await lookup("/articles2/article-1")).status, 200);
+  assert.equal((await lookup("/articles/article-1")).status, 404);
+  assert.equal((await lookup("/articles")).status, 200, "the list page keeps its URL");
+  assert.deepEqual(await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/redirects`), 200), redirectsBefore);
+});
+
+testWithD1("Kamakura import accepts a list page at the path of a detail basePath", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-base-path");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = await site.read("cms.schema.read");
+  const origin = "https://migration-base-path.example.test", siteId = "fixture-base-path";
+  const posts = schema.collections.find(({ id }) => id === "posts");
+  const cmsField = (key) => posts.fields.find((field) => field.key === key).fieldId;
+  const document = (pageId, revision, title, body = []) => ({ document: { schemaVersion: 1, siteId, pageId, locale: "ja", revision, title, tokens: {}, body } });
+  const bound = (pageId, kind, binding, block) => ({
+    ...document(pageId, 2, pageId, [{ type: "component", id: "cms", block, props: {} }]),
+    sourceBlocks: { [block]: { props: {} } },
+    replacements: [{ nodeId: "cms", kind, body: [{ type: "element", id: "card", tag: "article", children: [
+      { type: "element", id: "heading", tag: "h2", children: [{ type: "text", text: "題名" }] }] }], binding }]
+  });
+  const field = [{ nodeId: "heading", fieldId: cmsField("title"), target: "text" }];
+  const list = bound("list-source", "cms-list", { templateNodeId: "card", collectionId: "posts", limit: 6, fields: field }, "KamakuraCmsList");
+  const detail = bound("detail-source", "cms-detail", { collectionId: "posts", slugFieldId: cmsField("slug"), basePath: "/posts", fields: field }, "KamakuraCmsDetail");
+  const source = { formatVersion: 1, origin, siteId, locale: "ja", assets: [], assetVariants: [],
+    pages: [
+      { sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public",
+        published: document("home-source", 1, "Home"), draft: document("home-source", 1, "Home") },
+      { sourceUrl: origin + "/posts", sourcePageId: "list-source", path: "/posts", locale: "ja", visibility: "public", published: list, draft: list },
+      { sourceUrl: origin + "/post-template", sourcePageId: "detail-source", path: "/migration-detail-posts", locale: "ja", visibility: "public",
+        published: detail, draft: detail }
+    ],
+    cms: { schema: { ...schema, siteId }, items: [] }, redirects: [], scheduled: [] };
+  const bytes = Buffer.from(JSON.stringify(source));
+  const prepared = await prepareKamakuraSiteImport(bytes, createHash("sha256").update(bytes).digest("hex"), target);
+  await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch);
+  const rows = h.sqlite.prepare("SELECT page.path, version.bindings_json FROM managed_pages AS page JOIN managed_page_versions AS version ON version.site_id = page.site_id AND version.page_id = page.page_id AND version.locale = page.locale AND version.revision = page.current_revision WHERE page.site_id = ? ORDER BY page.path").all(site.siteId);
+  assert.deepEqual(rows.map(({ path }) => path), ["/", "/migration-detail-posts", "/posts"]);
+  assert.equal(JSON.parse(rows[1].bindings_json).detail.basePath, "/posts");
+});

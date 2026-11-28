@@ -7,8 +7,7 @@ import { appearEffects, easings, isStyleProperty, parseTokens, stateNames, state
 import { DocumentValidationError, fail, identifier, keys, parseAssetReference, record, string } from "./validation-utils.js";
 import type { EditingActor, EditingPageSnapshot, EditingPageTarget, JsonSchema, PageEditingValidationContext } from "./editing-api.js";
 import type { PageDocument, PageNode } from "./types.js";
-import { cmsBindingAttributes, cmsPageBindingProblems, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
-import { validatePagePath } from "./pages.js";
+import { cmsBindingAttributes, cmsDetailBaseInvalid, cmsDetailBasePath, cmsPageBindingProblems, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import { CAROUSEL_CONTROL_LIMIT, CAROUSEL_SLIDE_LIMIT, parseCarouselBinding } from "./carousel.js";
 
 export const PAGE_OPERATION_LIMIT = 500;
@@ -84,7 +83,7 @@ export const pageCmsBindingsSchema = nullable(obj({
     limit: { type: "integer", minimum: 1, maximum: 25 } }, {
     filter: obj({ fieldId: cmsIdentifier, equals: text }), order: obj({ fieldId: cmsIdentifier, direction: valuesOf(["asc", "desc"]) })
   }), 0, 12)
-}, { detail: obj({ collectionId: cmsIdentifier, slugFieldId: cmsIdentifier, fields: cmsFieldBindings }) }));
+}, { detail: obj({ collectionId: cmsIdentifier, slugFieldId: cmsIdentifier, fields: cmsFieldBindings }, { basePath: text }) }));
 const breakpoint = either(constant("base"), widthSchema);
 const asset = obj({ provider: id, id: { type: "string", maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" } });
 const styleValue = either(text, number, obj({ token: id }));
@@ -551,7 +550,7 @@ export function preparePageOperations(snapshot: EditingPageSnapshot, context: Pa
     if (!context.cmsSchema) return { status: "host_contract_violation" };
     const problem = cmsPageBindingProblems(document, cmsBindings, context.cmsSchema)[0];
     if (problem) return { status: "validation_failed", index: Math.max(0, input.operations.length - 1), reason: problem.message };
-    if (cmsBindings.detail && context.cmsPagePath !== undefined && (context.cmsPagePath === "/" || validatePagePath(context.cmsPagePath + "/item") !== null)) {
+    if (cmsBindings.detail && context.cmsPagePath !== undefined && cmsDetailBaseInvalid(cmsDetailBasePath(cmsBindings.detail, context.cmsPagePath))) {
       return { status: "validation_failed", index: Math.max(0, input.operations.length - 1), reason: "詳細ページの URL を設定してください。" };
     }
   }

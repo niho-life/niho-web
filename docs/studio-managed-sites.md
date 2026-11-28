@@ -91,6 +91,8 @@ CMS bindings が生成した画像の参照は、ページ公開版が固定す�
 
 Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、固定ページの公開版は不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS release の公開では、該当する CMS route と discovery artifact を生成し、CMS の公開版とサイト manifest pointer を一つの D1 batch で切り替えます。固定ページの明示的な公開は別操作で、その時点の CMS release を固定します。
 
+詳細の結び付けは、項目の公開 URL の親になるパスを任意の `detail.basePath` で指定できます。項目の URL は `basePath`（省略時はそのページのパス）に `/{slug}` を付けたものです。`basePath` は `/` でも `/cms` 配下でもなく、末尾に `/` を付けない通常のパスです。指定すると詳細ページ自身のパスは公開 URL に影響せず、同じパスに一覧の固定ページを置けます。`basePath` を変えて公開すると項目の URL が移り、旧 URL は 404 になります。旧 URL を残すなら、`site-redirects-save` などで転送を足します。固定ページと項目の slug が同じ URL になる場合は、公開時に 422 `invalid_cms_binding_values` で拒否します。設定は取り込みと `apply --cms-bindings` で行い、Studio の GUI には入力欄がありません。
+
 編集 preview は actor、site/page、page version、CMS item revision に結び付いた5分・一回限り token を使い、公開配信や履歴へ下書きを含めません。schema 移行計画は保存中の全 page bindings を検査します。固定ページの公開要求は detail slug ごとの path を現在の固定ページ・予約 URL・CMS route と照合します。CMS image の公開表示は素材 manifest と配信を含む #379 / #380 完了後に有効になります。
 
 ## CMS の公開と復旧

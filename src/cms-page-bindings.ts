@@ -22,6 +22,8 @@ export type CmsPageListBinding = {
 export type CmsPageDetailBinding = {
   readonly collectionId: string;
   readonly slugFieldId: string;
+  /** 項目の URL の親。省略時はページ自身のパス。 */
+  readonly basePath?: string;
   readonly fields: readonly CmsPageFieldBinding[];
 };
 export type CmsPageBindingsDocument = Pick<PageDocument, "siteId" | "pageId" | "locale"> & {
@@ -38,6 +40,14 @@ const fieldText = new Set(["text", "longText", "slug", "datetime"]);
 const textTags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a li dt dd strong em b i small blockquote figure figcaption time".split(" "));
 const listTags = new Set(["div", "article", "section", "li"]);
 const richTextTags = new Set(["div", "article", "section"]);
+/** 詳細の項目 URL の親になるパス。`basePath` があればそれ、なければページのパス。 */
+export function cmsDetailBasePath(detail: Pick<CmsPageDetailBinding, "basePath"> | undefined, pagePath: string): string {
+  return detail?.basePath ?? pagePath;
+}
+/** 項目 URL（親パス + `/{slug}`）を作れない親パスなら true。 */
+export function cmsDetailBaseInvalid(basePath: string): boolean {
+  return basePath === "/" || basePath === "/cms" || basePath.startsWith("/cms/") || validatePagePath(basePath + "/item") !== null;
+}
 const validSlug = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 
 function fieldBindings(input: unknown, path: string): CmsPageFieldBinding[] {
@@ -85,10 +95,12 @@ export function parseCmsPageBindings(input: unknown, target?: Target): CmsPageBi
   });
   uniqueCmsKeys(lists.map(({ templateNodeId }) => templateNodeId), path + ".lists");
   const detail = value.detail === undefined ? undefined : record(value.detail, path + ".detail");
-  if (detail) keys(detail, ["collectionId", "slugFieldId", "fields"], path + ".detail");
+  if (detail) keys(detail, ["collectionId", "slugFieldId", "basePath", "fields"], path + ".detail");
+  const basePath = detail?.basePath === undefined ? undefined : string(detail.basePath, path + ".detail.basePath", 200);
+  if (basePath !== undefined && cmsDetailBaseInvalid(basePath)) fail(path + ".detail.basePath", "invalid CMS detail base path");
   const document: CmsPageBindingsDocument = { schemaVersion: 1, ...scope, lists, ...(detail ? { detail: {
     collectionId: cmsId(detail.collectionId, path + ".detail.collectionId"),
-    slugFieldId: cmsId(detail.slugFieldId, path + ".detail.slugFieldId"), fields: fieldBindings(detail.fields, path + ".detail.fields")
+    slugFieldId: cmsId(detail.slugFieldId, path + ".detail.slugFieldId"), ...(basePath === undefined ? {} : { basePath }), fields: fieldBindings(detail.fields, path + ".detail.fields")
   } } : {}) };
   if (new TextEncoder().encode(JSON.stringify(document)).byteLength > CMS_PAGE_BINDINGS_MAX_BYTES) fail(path, "CMS page bindings are too large");
   return document;
