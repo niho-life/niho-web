@@ -47,7 +47,7 @@ function BindingForm({ adapter, target, document, version, saved, selectedNode, 
   const selectedItem = items.find((item) => item.collectionId + "/" + item.itemId === itemKey);
   const capableDetailCollections = collections.filter((collection) => collection.slugField !== null);
   const detailCollection = capableDetailCollections.find(({ id }) => id === working.detail?.collectionId);
-  const withDetail = (collection: CmsCollection) => setWorking({ ...working, detail: { collectionId: collection.id, slugFieldId: collection.slugField!, fields: [] } });
+  const withDetail = (collection: CmsCollection) => setWorking({ ...working, detail: { collectionId: collection.id, slugFieldId: collection.slugField!, ...(working.detail?.basePath === undefined ? {} : { basePath: working.detail.basePath }), fields: [] } });
   const listTargets = (rootId: string) => {
     const root = entries.find(({ node }) => node.type === "element" && node.id === rootId);
     return root ? entries.filter(({ path }) => root.path.every((index, depth) => path[depth] === index)) : [];
@@ -130,7 +130,7 @@ function BindingForm({ adapter, target, document, version, saved, selectedNode, 
     {!working.detail && capableDetailCollections[0] && path && path !== "/" && <button type="button" onClick={() => withDetail(capableDetailCollections[0]!)}>CMS 詳細ページにする</button>}
     {working.detail && <details open>
       <summary>CMS 詳細ページ</summary>
-      {path && <p className="e-help">公開 URL は {path}/スラッグ です。</p>}
+      {path && <p className="e-help">公開 URL は {working.detail.basePath ?? path}/スラッグ です。</p>}
       <label className="e-field"><span>コレクション</span><select value={working.detail.collectionId} onChange={(event) => {
         const next = capableDetailCollections.find(({ id }) => id === event.target.value);
         if (next) withDetail(next);
