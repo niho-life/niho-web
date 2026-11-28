@@ -116,7 +116,15 @@ export function StyleInspector(props: StyleInspectorProps) {
     const operations = targets.map((target): EditorOperation => only ? { type: "styleRange", path: target.path, breakpoint: tier, until: next!.start, values } : { type: "styles", path: target.path, breakpoint: tier, values });
     return operations.length === 1 ? operations[0]! : operations;
   };
-  const set = (values: Values) => apply(operation(values));
+  // 表示中の幅では、今の段より上の段の値が使われて見た目が変わらないことがある。保存後にそれを案内する。
+  const announceOverride = (values: Values) => {
+    if (only) return;
+    const widths = targets.flatMap((target) => (Object.keys(values) as StyleProperty[]).flatMap((property) => fieldState(document, target.node, property, tier).overriddenAt)).filter((width) => width <= props.width);
+    if (!widths.length) return;
+    const top = Math.max(...widths), higherTier = tierOf(top);
+    notify(`この変更は${span}に保存しました。表示中の ${props.width}px では ${higherTier ? tierName(higherTier) : `${top}px〜`} の値が使われるため、見た目は変わりません。上の「表示中の段を編集」で、この幅の値を直せます。`);
+  };
+  const set = (values: Values) => { const error = apply(operation(values)); if (!error) announceOverride(values); return error; };
   const report = (error: string | undefined) => { if (error) notify(error); };
   const draft = (property: StyleProperty) => (value: StyleValue | undefined | null) => preview(value === null ? null : operation({ [property]: value }));
   const statesFor = (property: StyleProperty) => targets.map((target) => fieldState(document, target.node, property, tier));

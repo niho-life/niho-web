@@ -72,7 +72,7 @@ export type PageRendererProps = {
    * @internal エディターのキャンバスだけが渡す。viewportHeight は viewport 高さの単位を倍率 100% の高さの px に置き換える基準、
    * siteOrigin は文書の root-relative な画像 URL（`/x.svg`）をサイトの公開 origin で解決する（キャンバスの iframe は Studio の origin のため）。
    */
-  canvas?: { viewportHeight?: number | undefined; siteOrigin?: string | undefined; /** Studio previewだけで標準media操作を許可する。 */ interactive?: boolean | undefined } | undefined;
+  canvas?: { viewportHeight?: number | undefined; siteOrigin?: string | undefined; /** Studio previewだけで標準media操作を許可する。 */ interactive?: boolean | undefined; /** 直接編集した節点 ID ごとの世代。変わった節点は key が変わり、React が DOM を作り直す。 */ nodeGenerations?: Readonly<Record<string, number>> | undefined } | undefined;
   /** @internal Studio-native publication supplies trusted, generated image hints without mutating the saved page document. */
   imageHints?: Readonly<Record<string, PublicImageRenderHints>> | undefined;
 };
@@ -157,7 +157,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
   const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
     (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
   const render = (node: PageNode, videoInteraction?: VideoInteractionChild, index = 0): ReactElement => createElement(MemoizedPageNode, {
-    key: node.type === "text" ? `text:${index}` : node.id, node, videoInteraction, context, renderNode
+    key: node.type === "text" ? `text:${index}` : canvas?.nodeGenerations?.[node.id] ? `${node.id}~${canvas.nodeGenerations[node.id]}` : node.id, node, videoInteraction, context, renderNode
   });
   function renderNode(node: PageNode, videoInteraction?: VideoInteractionChild): ReactNode {
     if (node.type === "text") return node.text;

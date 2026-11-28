@@ -317,3 +317,35 @@ test("publish permission controls only site.styles.publish", async () => {
   await assert.rejects(client.publishSiteStyles({ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }),
     (error) => error instanceof EditingApiClientError && error.code === "not_found");
 });
+
+test("composeSiteFrame drops unused text styles only when the frame and page together exceed the limit", async () => {
+  const { composeSiteFrame } = await import("../dist/site-frame.js");
+  const { parsePageDocument } = await import("@niho/web/core");
+  const style = (size) => ({ base: { fontSize: `${size}px` } });
+  const pageStyles = Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`page${index}`, style(10 + index)]));
+  const frameStyles = Object.fromEntries(Array.from({ length: 6 }, (_, index) => [`frame${index}`, style(30 + index)]));
+  const text = (id, textStyle) => ({ type: "element", id, tag: "p", style: { textStyle }, children: [{ type: "text", text: id }] });
+  const page = { schemaVersion: 1, siteId: "site", pageId: "home", locale: "ja", revision: 1, title: "Home", tokens: {},
+    textStyles: pageStyles, body: Array.from({ length: 10 }, (_, index) => text(`body${index}`, `page${index}`)) };
+  const frame = { ja: { header: Array.from({ length: 6 }, (_, index) => text(`head${index}`, `frame${index}`)), footer: [], textStyles: frameStyles } };
+  const composed = composeSiteFrame(page, frame);
+  assert.deepEqual(Object.keys(composed.textStyles).sort(), [...Array.from({ length: 6 }, (_, index) => `frame${index}`),
+    ...Array.from({ length: 10 }, (_, index) => `page${index}`)].sort());
+  assert.equal(parsePageDocument(composed).body.length, 1, "the composed page parses within the limit");
+  const small = composeSiteFrame({ ...page, textStyles: { page0: style(10), unused: style(12) } }, frame);
+  assert.deepEqual(Object.keys(small.textStyles).sort(), [...Object.keys(frameStyles), "page0", "unused"].sort(), "within the limit nothing is dropped");
+});
+
+test("composeSiteFrame keeps the page's HTML id when the frame uses the same one", async () => {
+  const { composeSiteFrame } = await import("../dist/site-frame.js");
+  const { parsePageDocument } = await import("@niho/web/core");
+  const page = { schemaVersion: 1, siteId: "site", pageId: "home", locale: "ja", revision: 1, title: "Home", tokens: {},
+    body: [{ type: "element", id: "page-footer", tag: "footer", attrs: { id: "footer" }, children: [{ type: "text", text: "page" }] }] };
+  const frame = { ja: { header: [], footer: [{ type: "element", id: "frame-footer", tag: "div", attrs: { id: "footer", "aria-label": "kept" }, children: [{ type: "text", text: "frame" }] },
+    { type: "element", id: "frame-nav", tag: "nav", attrs: { id: "site-nav" }, children: [] }] } };
+  const composed = parsePageDocument(composeSiteFrame(page, frame));
+  const nodes = (items) => items.flatMap((node) => node.type === "element" ? [node, ...nodes(node.children)] : []);
+  const ids = nodes(composed.body).flatMap((node) => node.attrs?.id ? [node.attrs.id] : []);
+  assert.deepEqual(ids.sort(), ["footer", "site-nav"]);
+  assert.deepEqual(nodes(composed.body).find((node) => node.id.endsWith("frame-footer")).attrs, { "aria-label": "kept" });
+});
