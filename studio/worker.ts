@@ -3142,6 +3142,9 @@ async function handle(request: Request, env: Env, timing: StudioRequestTiming): 
   let identity: AccessIdentity;
   try {
     const authenticated = await measureRequest(timing, "auth", () => authenticate(request, env));
+    // 配備 smoke の service token には、今回のビルドと照合する版付きコードだけを返す。画面と API は人の Access に限る。
+    if (authenticated.kind === "service" && (request.method === "GET" || request.method === "HEAD")
+      && VERSIONED_CODE_ASSET_PATH.test(url.pathname)) return staticAsset(request, env, url);
     if (authenticated.kind !== "human") throw new AuthenticationError("human Access identity required");
     identity = authenticated;
   } catch (error) {
@@ -3205,6 +3208,10 @@ async function handle(request: Request, env: Env, timing: StudioRequestTiming): 
       kamakuraEditor ? [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`] : [],
       kamakuraEditor ? ["https://www.instagram.com/embed.js"] : [], kamakuraEditor ? ["https:"] : dashboardFrames);
   }
+  return staticAsset(request, env, url);
+}
+
+async function staticAsset(request: Request, env: Env, url: URL): Promise<Response> {
   const asset = withStaticSecurity(await env.ASSETS.fetch(request));
   if (asset.status === 200 && (VERSIONED_FONT_PATH.test(url.pathname) || VERSIONED_CODE_ASSET_PATH.test(url.pathname))) asset.headers.set("Cache-Control", VERSIONED_FONT_CACHE);
   return asset;
