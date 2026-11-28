@@ -11,10 +11,12 @@ import { escapeHtml } from "./managed-cms-model.js";
 
 type SourceNode = DefaultTreeAdapterTypes.ChildNode;
 type SourceElement = DefaultTreeAdapterTypes.Element;
-type Context = { readonly phrasing: boolean; readonly link: boolean; readonly depth: number };
+/** depth は作る要素の深さ、level は元の HTML をたどる深さです。 */
+type Context = { readonly phrasing: boolean; readonly link: boolean; readonly depth: number; readonly level: number };
 
 const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 const MAX_DEPTH = 24;
+const MAX_SOURCE_LEVEL = 128;
 const DROPPED = new Set(("script style template iframe frame frameset object embed applet noscript noembed noframes svg math link meta base title head "
   + "form input button select option optgroup textarea canvas audio video source track param picture map area dialog portal slot datalist output").split(" "));
 const BLOCKS: ReadonlyMap<string, ElementTag> = new Map<string, ElementTag>([["p", "p"], ["pre", "p"], ["tr", "p"], ["h1", "h2"], ["h2", "h2"],
@@ -34,8 +36,22 @@ export function decodeCmsReleaseRichText(value: string): string {
   return value.replace(/&(amp|lt|gt|quot|#39);/gu, (_match, name: string) => entities[name]!);
 }
 
-export function cmsRichTextNodes(html: string, newId: () => string): PageNode[] {
-  const headingIds = new Set<string>();
+/** 深すぎる入れ子は、再帰せずに文字だけを順に取り出します。 */
+function sourceText(nodes: readonly SourceNode[]): PageNode[] {
+  const pending = [...nodes].reverse();
+  let text = "";
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.nodeName === "#text") text += (node as DefaultTreeAdapterTypes.TextNode).value;
+    else if ("tagName" in node && node.namespaceURI === HTML_NAMESPACE && !DROPPED.has(node.tagName)) {
+      for (let index = node.childNodes.length - 1; index >= 0; index--) pending.push(node.childNodes[index]!);
+    }
+  }
+  return text ? [{ type: "text", text }] : [];
+}
+
+/** `headingIds` を共有すると、1ページに本文が複数回出ても見出し ID は重複しません。 */
+export function cmsRichTextNodes(html: string, newId: () => string, headingIds = new Set<string>()): PageNode[] {
   const attribute = (element: SourceElement, name: string) => element.attrs.find((entry) => entry.name === name && !entry.namespace)?.value;
   const element = (tag: ElementTag, children: PageNode[], attrs?: ElementAttributes): ElementNode =>
     ({ type: "element", id: newId(), tag, ...(attrs && Object.keys(attrs).length ? { attrs } : {}), children });
@@ -51,9 +67,11 @@ export function cmsRichTextNodes(html: string, newId: () => string): PageNode[] 
     return [element("img", [], attrs)];
   }
 
+  const inside = (context: Context): Context => ({ ...context, depth: context.depth + 1, level: context.level + 1 });
+
   function link(source: SourceElement, context: Context): PageNode[] {
     const href = attribute(source, "href")?.trim();
-    if (context.link || !href || !isSafePublicLink(href)) return convert(source.childNodes, context);
+    if (context.link || !href || !isSafePublicLink(href)) return convert(source.childNodes, { ...context, level: context.level + 1 });
     const attrs: ElementAttributes = { href };
     const rel = (attribute(source, "rel") ?? "").split(/\s+/u).filter((token) => REL.test(token));
     if (attribute(source, "target") === "_blank") {
@@ -61,7 +79,7 @@ export function cmsRichTextNodes(html: string, newId: () => string): PageNode[] 
       if (!rel.includes("noopener")) rel.push("noopener");
     }
     if (rel.length) attrs.rel = [...new Set(rel)].join(" ");
-    return [element("a", convert(source.childNodes, { phrasing: true, link: true, depth: context.depth + 1 }), attrs)];
+    return [element("a", convert(source.childNodes, { ...inside(context), phrasing: true, link: true }), attrs)];
   }
 
   /** ul / ol の直下は li だけです。ほかの内容は項目にまとめます。 */
@@ -75,8 +93,8 @@ export function cmsRichTextNodes(html: string, newId: () => string): PageNode[] 
     for (const node of nodes) {
       if ("tagName" in node && node.tagName === "li" && node.namespaceURI === HTML_NAMESPACE) {
         flush();
-        items.push(element("li", convert(node.childNodes, { ...context, depth: context.depth + 1 })));
-      } else loose.push(...convert([node], { ...context, depth: context.depth + 1 }));
+        items.push(element("li", convert(node.childNodes, inside(context))));
+      } else loose.push(...convert([node], inside(context)));
     }
     flush();
     return items;
@@ -90,19 +108,20 @@ export function cmsRichTextNodes(html: string, newId: () => string): PageNode[] 
       }
       if (!("tagName" in node) || node.namespaceURI !== HTML_NAMESPACE || DROPPED.has(node.tagName)) return [];
       const name = node.tagName;
-      if (context.depth >= MAX_DEPTH) return convert(node.childNodes, context);
+      if (context.depth >= MAX_DEPTH || context.level >= MAX_SOURCE_LEVEL) return sourceText([node]);
+      const unwrapped = () => convert(node.childNodes, { ...context, level: context.level + 1 });
       if (name === "br") return [element("br", [])];
       if (name === "hr") return context.phrasing ? [] : [element("hr", [])];
       if (name === "img") return image(node);
       if (name === "a") return link(node, context);
-      if (name === "td" || name === "th") return [...convert(node.childNodes, context), { type: "text", text: " " }];
+      if (name === "td" || name === "th") return [...unwrapped(), { type: "text", text: " " }];
       const inline = INLINE.get(name);
-      if (inline) return [element(inline, convert(node.childNodes, { ...context, phrasing: true, depth: context.depth + 1 }))];
+      if (inline) return [element(inline, convert(node.childNodes, { ...inside(context), phrasing: true }))];
       // li は一覧の中でだけ使えます。一覧の外に置かれた li は区切りの要素にします。
       const block = name === "li" ? "div" : BLOCKS.get(name);
-      if (!block || context.phrasing) return convert(node.childNodes, context);
+      if (!block || context.phrasing) return unwrapped();
       if (block === "ul" || block === "ol") {
-        const items = listItems(node.childNodes, context);
+        const items = listItems(node.childNodes, inside(context));
         return items.length ? [element(block, items)] : [];
       }
       const attrs: ElementAttributes = {};
@@ -111,11 +130,17 @@ export function cmsRichTextNodes(html: string, newId: () => string): PageNode[] 
         headingIds.add(id);
         attrs.id = id;
       }
-      return [element(block, convert(node.childNodes, { phrasing: TEXT_ONLY.has(block), link: context.link, depth: context.depth + 1 }), attrs)];
+      return [element(block, convert(node.childNodes, { ...inside(context), phrasing: TEXT_ONLY.has(block) }), attrs)];
     });
   }
 
-  return convert(parseFragment(html).childNodes, { phrasing: false, link: false, depth: 0 });
+  return convert(parseFragment(html).childNodes, { phrasing: false, link: false, depth: 0, level: 0 });
+}
+
+/** 1ページ分の本文の変換。公開 release の値は `released` を指定してエスケープを戻します。 */
+export function cmsRichTextProjection({ released }: { readonly released: boolean }) {
+  const headingIds = new Set<string>();
+  return (value: string, newId: () => string): PageNode[] => cmsRichTextNodes(released ? decodeCmsReleaseRichText(value) : value, newId, headingIds);
 }
 
 /** 画面や説明文に使う、本文の文字だけを取り出します。 */

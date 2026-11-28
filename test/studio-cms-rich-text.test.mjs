@@ -9,7 +9,7 @@ const bundle = await build({
     resolveDir: fileURLToPath(new URL("..", import.meta.url)) },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false
 });
-const { cmsRichTextNodes, cmsRichTextPlainText, decodeCmsReleaseRichText, escapeHtml, renderCmsRichTextHtml } =
+const { cmsRichTextNodes, cmsRichTextPlainText, cmsRichTextProjection, decodeCmsReleaseRichText, escapeHtml, renderCmsRichTextHtml } =
   await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 
 const convert = (html) => {
@@ -49,6 +49,18 @@ test("CMS rich text normalizes nesting that the page document does not allow", (
     + "<div>".repeat(60) + "深い入れ子" + "</div>".repeat(60);
   const document = pageWith(html);
   assert.match(cmsRichTextPlainText(document.body), /段落.*中の区切り.*二重.*一覧の外.*項目 値.*見出し内の一覧.*深い入れ子/u);
+});
+
+test("CMS rich text survives pathological nesting and never repeats a heading ID on one page", () => {
+  for (const tag of ["div", "span", "ul", "table"]) {
+    const html = `<${tag}>`.repeat(5_000) + "底の文字" + `</${tag}>`.repeat(5_000);
+    assert.match(cmsRichTextPlainText(pageWith(html).body), /底の文字/u, tag);
+  }
+  const project = cmsRichTextProjection({ released: true });
+  let counter = 0;
+  const newId = () => `rich-${++counter}`, value = escapeHtml('<h2 id="index_a">題</h2>');
+  const nodes = [...project(value, newId), ...project(value, newId)];
+  assert.deepEqual(nodes.map((node) => node.attrs?.id), ["index_a", undefined]);
 });
 
 test("CMS release rich text is decoded once and rendered with escaped text and allowed images", () => {
