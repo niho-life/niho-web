@@ -285,6 +285,21 @@ test("published Kamakura images select a request-sized version and negotiated mo
   assert.match((await plan.head(null)).csp, new RegExp(`img-src[^;]*${mediaOrigin.replaceAll(".", "\\.")}`, "u"));
 });
 
+testWithD1("Access service token reads only versioned Studio build files outside the editing API", async (t) => {
+  const h = await fixture(t);
+  const service = { service: true, token: h.serviceToken };
+  const asset = await h.send(MANAGEMENT_ORIGIN, "GET", "/assets/app-0123456789ab.js", undefined, service);
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get("Cache-Control"), "private, max-age=31536000, immutable");
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "HEAD", "/assets/chunks/project-dashboard-AAA11111.js", undefined, service)).status, 200);
+  for (const path of ["/", "/projects/fixture/sites/fixture", "/assets/app.js", "/index.html"]) {
+    assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", path, undefined, service)).status, 401, path);
+  }
+  assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "GET", "/api/session", undefined, service), 401)).error, "session_expired");
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", "/assets/app-0123456789ab.js", undefined, service)).status, 401);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", "/assets/app-0123456789ab.js")).status, 200);
+});
+
 testWithD1("Studio CLI shares public delivery settings, separate versions and owner grants with the GUI", async (t) => {
   const h = await fixture(t);
   const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CLI Settings", slug: "cli-settings", locale: "ja" }), 201);

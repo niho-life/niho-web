@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { build } from "esbuild";
-import { pendingMigrations, readReleaseSettings, registeredManagedSiteSlug, smokeStudio, writeConfig } from "../studio/release.mjs";
+import { pendingMigrations, readReleaseSettings, registeredManagedSite, smokeStudio, writeConfig } from "../studio/release.mjs";
 
 const env = {
   CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
@@ -16,14 +16,11 @@ const env = {
   STUDIO_ACCESS_AUDIENCE: "b".repeat(64),
   STUDIO_SMOKE_PROJECT_ID: "project-fixture",
   STUDIO_SMOKE_SITE_ID: "site-fixture",
-  STUDIO_SMOKE_PUBLIC_PATH: "/s/example/"
+  STUDIO_SMOKE_PUBLIC_PATH: "/s/example/",
+  STUDIO_SMOKE_ACCESS_CLIENT_ID: `${"c".repeat(32)}.access`,
+  STUDIO_SMOKE_ACCESS_CLIENT_SECRET: "e".repeat(64)
 };
-
-function token(overrides = {}) {
-  const claims = { type: "app", sub: "fixture-user", email: "fixture@example.test", iss: env.STUDIO_ACCESS_ISSUER,
-    aud: [env.STUDIO_ACCESS_AUDIENCE], exp: Math.floor(Date.now() / 1000) + 3600, ...overrides };
-  return `fixture.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
-}
+const capabilities = (siteId, ids = ["pages.read"]) => Response.json({ apiVersion: "v1", siteId, operations: ids.map((id) => ({ id })) });
 
 test("release preflight rejects missing settings and unsuitable Access credentials without printing values", () => {
   assert.throws(() => readReleaseSettings({}), /CLOUDFLARE_ACCOUNT_ID/u);
@@ -36,10 +33,17 @@ test("release preflight rejects missing settings and unsuitable Access credentia
   assert.throws(() => readReleaseSettings({ ...env, PUBLIC_SITES_ORIGIN: env.STUDIO_ORIGIN }), /PUBLIC_SITES_ORIGIN/u);
   assert.throws(() => readReleaseSettings({ ...env, PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_ORIGIN }), /PUBLIC_SITES_PREVIEW_ORIGIN/u);
   assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_PUBLIC_PATH: "/s/example/../../unexpected" }), /STUDIO_SMOKE_PUBLIC_PATH/u);
-  assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token({ exp: 0 }) }), /有効期限/u);
-  assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token({ sub: "", email: undefined }) }), /ユーザー JWT/u);
-  assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token({ aud: ["incorrect-audience"] }) }), /ユーザー JWT/u);
-  assert.equal(readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token() }).site, env.STUDIO_SMOKE_SITE_ID);
+  assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_CLIENT_ID: "fixture-user@example.test" }), /STUDIO_SMOKE_ACCESS_CLIENT_ID/u);
+  assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_CLIENT_SECRET: undefined }), /STUDIO_SMOKE_ACCESS_CLIENT_SECRET/u);
+  const secret = `${"s".repeat(40)} private`;
+  assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_CLIENT_SECRET: secret }), (error) => {
+    assert.match(error.message, /STUDIO_SMOKE_ACCESS_CLIENT_SECRET/u);
+    assert.ok(!error.message.includes(secret));
+    return true;
+  });
+  const settings = readReleaseSettings(env);
+  assert.equal(settings.site, env.STUDIO_SMOKE_SITE_ID);
+  assert.equal(settings.clientId, env.STUDIO_SMOKE_ACCESS_CLIENT_ID);
 });
 
 test("release parses Wrangler list and blocks pending migrations outside the additive allowlist", () => {
@@ -62,19 +66,22 @@ test("primary-host migration avoids dynamic SQLite GLOB patterns", () => {
   assert.doesNotMatch(migration, /manifest_key\s+GLOB/iu);
 });
 
-test("release parses one registered managed-site slug from Wrangler D1 JSON", () => {
-  assert.equal(registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [{ slug: "example-site" }] }])), "example-site");
-  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [] }])), /一意に確認/u);
-  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [{ slug: "one" }, { slug: "two" }] }])), /一意に確認/u);
-  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: false, results: [{ slug: "example-site" }] }])), /一意に確認/u);
-  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: false, results: [{ slug: "bad--slug" }] }])), /一意に確認/u);
-  assert.throws(() => registeredManagedSiteSlug("unknown Wrangler output"), /読み取れません/u);
+test("release parses one registered managed site and its publication count from Wrangler D1 JSON", () => {
+  const row = (slug, count = 2) => ({ slug, published_page_count: count });
+  assert.deepEqual(registeredManagedSite(JSON.stringify([{ success: true, results: [row("example-site")] }])), { slug: "example-site", publishedPageCount: 2 });
+  assert.deepEqual(registeredManagedSite(JSON.stringify([{ success: true, results: [row("example-site", 0)] }])), { slug: "example-site", publishedPageCount: 0 });
+  assert.throws(() => registeredManagedSite(JSON.stringify([{ success: true, results: [] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSite(JSON.stringify([{ success: true, results: [row("one"), row("two")] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSite(JSON.stringify([{ success: true, results: [{ slug: "example-site" }] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSite(JSON.stringify([{ success: false, results: [row("example-site")] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSite(JSON.stringify([{ success: true, results: [row("bad--slug")] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSite("unknown Wrangler output"), /読み取れません/u);
 });
 
 test("release builds a private Wrangler config from external settings", () => {
   const directory = mkdtempSync(join(tmpdir(), "niho-studio-release-test-"));
   try {
-    const settings = readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token() });
+    const settings = readReleaseSettings(env);
     const configPath = writeConfig(directory, settings);
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     assert.equal(config.name, "niho-web-studio");
@@ -100,17 +107,16 @@ test("release builds a private Wrangler config from external settings", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("release smoke authenticates only the Studio requests and checks Dashboard assets and the public page", async () => {
-  const settings = readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token() });
+function smokeFixture(publishedPageCount, publicResponse) {
+  const settings = readReleaseSettings(env);
   const assets = {
     entry: "/assets/app-aaaaaa111111.js", chunkPath: "/assets/chunks/project-dashboard-AAA11111.js",
     script: Buffer.from("fixture entry"), chunk: Buffer.from("fixture chunk")
   };
-  const path = `/projects/${settings.project}/sites/${settings.site}`;
-  const readRegisteredSlug = async (project, site) => {
+  const readRegisteredSite = async (project, site) => {
     assert.equal(project, settings.project);
     assert.equal(site, settings.site);
-    return "example";
+    return { slug: "example", publishedPageCount };
   };
   const requests = [];
   const ok = (body, type) => new Response(body, { headers: { "Content-Type": type } });
@@ -119,80 +125,57 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     requests.push(url.pathname);
     assert.equal(options.redirect, "error");
     if (url.origin === settings.publicOrigin) {
-      assert.equal(options.headers["CF-Access-Token"], undefined);
+      assert.equal(options.headers["CF-Access-Client-Id"], undefined);
+      assert.equal(options.headers["CF-Access-Client-Secret"], undefined);
       assert.equal(url.pathname, settings.publicPath);
-      return ok(`<meta property="og:url" content="${rawUrl}">`, "text/html");
+      return publicResponse(rawUrl);
     }
     assert.equal(url.origin, settings.studioOrigin);
-    assert.equal(options.headers["CF-Access-Token"], settings.token);
-    if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
-    if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
-      overview: { status: "ready", data: { publicationStatus: "published", publishedPageCount: 1, publishedUrl: `${settings.publicOrigin}/s/example/` } }, members: { status: "ready" } });
-    if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
+    assert.equal(options.headers["CF-Access-Client-Id"], env.STUDIO_SMOKE_ACCESS_CLIENT_ID);
+    assert.equal(options.headers["CF-Access-Client-Secret"], env.STUDIO_SMOKE_ACCESS_CLIENT_SECRET);
+    if (url.pathname === `/api/edit/v2/sites/${settings.site}/capabilities`) return capabilities(settings.site);
     if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
     if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
     assert.fail("Unexpected smoke request");
   }
-  await smokeStudio(settings, assets, request, readRegisteredSlug);
-  assert.deepEqual(requests, ["/api/session", `/api${path}/dashboard`, path, assets.entry, assets.chunkPath, settings.publicPath]);
+  return { settings, assets, readRegisteredSite, requests, ok, request };
+}
+
+test("release smoke sends the service token only to Studio and checks build assets and the public page", async () => {
+  const { settings, assets, readRegisteredSite, requests, ok, request } = smokeFixture(1,
+    (rawUrl) => new Response(`<meta property="og:url" content="${rawUrl}">`, { headers: { "Content-Type": "text/html" } }));
+  await smokeStudio(settings, assets, request, readRegisteredSite);
+  assert.deepEqual(requests, [`/api/edit/v2/sites/${settings.site}/capabilities`, assets.entry, assets.chunkPath, settings.publicPath]);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(assets.chunkPath)
-    ? ok("old chunk", "application/javascript") : request(url, options), readRegisteredSlug), /遅延読込 chunk/u);
+    ? ok("old chunk", "application/javascript") : request(url, options), readRegisteredSite), /遅延読込 chunk/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
-    ? ok("<html>unexpected page</html>", "text/html") : request(url, options), readRegisteredSlug), /og:url/u);
-  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/dashboard")
-    ? Response.json({ status: "forbidden" }) : request(url, options), readRegisteredSlug), /メンバー一覧/u);
-  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/dashboard")
-    ? Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
-      overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/other-site/` } }, members: { status: "ready" } })
-    : request(url, options), readRegisteredSlug), /公開 path が一致/u);
-  await assert.rejects(() => smokeStudio(settings, assets, request, async () => "other-site"), /登録済み slug/u);
+    ? ok("<html>unexpected page</html>", "text/html") : request(url, options), readRegisteredSite), /og:url/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/capabilities")
+    ? capabilities(settings.site, ["site.settings.read"]) : request(url, options), readRegisteredSite), /pages\.read/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/capabilities")
+    ? capabilities("other-site") : request(url, options), readRegisteredSite), /pages\.read/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/capabilities")
+    ? Response.json({ error: "forbidden" }, { status: 403 }) : request(url, options), readRegisteredSite), /HTTP 403/u);
+  await assert.rejects(() => smokeStudio(settings, assets, () => { throw new TypeError("redirect"); }, readRegisteredSite), /service token/u);
+  await assert.rejects(() => smokeStudio(settings, assets, request, async () => ({ slug: "other-site", publishedPageCount: 1 })), /登録済み slug/u);
 });
 
 test("release smoke accepts an unpublished managed site only when its public path returns a safe 404", async () => {
-  const settings = readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token() });
-  const assets = {
-    entry: "/assets/app-aaaaaa111111.js", chunkPath: "/assets/chunks/project-dashboard-AAA11111.js",
-    script: Buffer.from("fixture entry"), chunk: Buffer.from("fixture chunk")
-  };
-  const path = `/projects/${settings.project}/sites/${settings.site}`;
-  const readRegisteredSlug = async (project, site) => {
-    assert.equal(project, settings.project);
-    assert.equal(site, settings.site);
-    return "example";
-  };
-  const requests = [];
-  const ok = (body, type) => new Response(body, { headers: { "Content-Type": type } });
   const safeNotFound = () => new Response(null, { status: 404, headers: {
     "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8",
     "Cross-Origin-Resource-Policy": "same-origin", "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"
   } });
-  async function request(rawUrl, options) {
-    const url = new URL(rawUrl);
-    requests.push(url.pathname);
-    assert.equal(options.redirect, "error");
-    if (url.origin === settings.publicOrigin) {
-      assert.equal(options.headers["CF-Access-Token"], undefined);
-      assert.equal(url.pathname, settings.publicPath);
-      return safeNotFound();
-    }
-    assert.equal(url.origin, settings.studioOrigin);
-    assert.equal(options.headers["CF-Access-Token"], settings.token);
-    if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
-    if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
-      overview: { status: "ready", data: { publicationStatus: "unpublished", publishedPageCount: 0, publishedUrl: null } }, members: { status: "ready" } });
-    if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
-    if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
-    if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
-    assert.fail("Unexpected smoke request");
-  }
-  await smokeStudio(settings, assets, request, readRegisteredSlug);
-  assert.deepEqual(requests, ["/api/session", `/api${path}/dashboard`, path, assets.entry, assets.chunkPath, settings.publicPath]);
+  const { settings, assets, readRegisteredSite, requests, ok, request } = smokeFixture(0, safeNotFound);
+  await smokeStudio(settings, assets, request, readRegisteredSite);
+  assert.deepEqual(requests, [`/api/edit/v2/sites/${settings.site}/capabilities`, assets.entry, assets.chunkPath, settings.publicPath]);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
-    ? new Response(null, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } }) : request(url, options), readRegisteredSlug), /安全な404/u);
+    ? new Response(null, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } }) : request(url, options), readRegisteredSite), /安全な404/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
-    ? ok("unexpected published page", "text/html") : request(url, options), readRegisteredSlug), /安全な404/u);
-  await assert.rejects(() => smokeStudio(settings, assets, request, async () => "another-site"), /登録済み slug/u);
+    ? ok("unexpected published page", "text/html") : request(url, options), readRegisteredSite), /安全な404/u);
+  await assert.rejects(() => smokeStudio(settings, assets, request, async () => ({ slug: "another-site", publishedPageCount: 0 })), /登録済み slug/u);
+  const pagePath = readReleaseSettings({ ...env, STUDIO_SMOKE_PUBLIC_PATH: "/s/example/about/" });
+  await assert.rejects(() => smokeStudio(pagePath, assets, request, readRegisteredSite), /サイト先頭/u);
 });
 
 test("Studio reports missing bindings and invalid settings on its first cron event", async (t) => {

@@ -13,6 +13,7 @@ const output = join(studio, "dist/public");
 const rollbackFile = ".studio-rollback-version";
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu;
 const identifier = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
+const serviceClientId = /^[0-9a-f]{32}\.access$/u;
 const entryScript = /<script type="module" src="(\/assets\/app-[a-f0-9]{12}\.js)"><\/script>/u;
 const dashboardImport = /import\("\.\/(chunks\/project-dashboard-[A-Za-z0-9_-]{8}\.js)"\)/u;
 const requiredSecrets = ["KAMAKURA_STUDIO_BRIDGE_SECRET"];
@@ -64,21 +65,9 @@ export function readReleaseSettings(env) {
     if (!/^\/s\/[a-z0-9]+(?:-[a-z0-9]+)*\//u.test(value)) return false;
     return new URL(value, publicOrigin).pathname === value;
   });
-  const token = requireValue(env, "STUDIO_SMOKE_ACCESS_TOKEN", (value) => value.length <= 64 * 1024 && /^[\w-]+\.[\w-]+\.[\w-]+$/u.test(value));
-  let claims;
-  try { claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")); }
-  catch { throw new ReleaseError("STUDIO_SMOKE_ACCESS_TOKEN を読み取れません。"); }
-  if (claims?.type !== "app" || !claims.sub || typeof claims.email !== "string" || !claims.email ||
-      claims.iss !== accessIssuer || ![claims.aud].flat().includes(accessAudience) || !Number.isSafeInteger(claims.exp)) {
-    throw new ReleaseError("STUDIO_SMOKE_ACCESS_TOKEN に対象の Access application のユーザー JWT を指定してください。");
-  }
-  const settings = { accountId, databaseId, studioOrigin, publicOrigin, previewOrigin, accessIssuer, accessAudience, project, site, publicPath, token, expiresAt: claims.exp };
-  checkExpiry(settings, 120);
-  return settings;
-}
-
-function checkExpiry(settings, margin) {
-  if (settings.expiresAt <= Date.now() / 1000 + margin) throw new ReleaseError("STUDIO_SMOKE_ACCESS_TOKEN の有効期限が足りません。Access で再認証してください。");
+  const clientId = requireValue(env, "STUDIO_SMOKE_ACCESS_CLIENT_ID", (value) => serviceClientId.test(value));
+  const clientSecret = requireValue(env, "STUDIO_SMOKE_ACCESS_CLIENT_SECRET", (value) => /^[\x21-\x7e]{32,512}$/u.test(value));
+  return { accountId, databaseId, studioOrigin, publicOrigin, previewOrigin, accessIssuer, accessAudience, project, site, publicPath, clientId, clientSecret };
 }
 
 export function pendingMigrations(stdout) {
@@ -96,7 +85,7 @@ export function pendingMigrations(stdout) {
   });
 }
 
-export function registeredManagedSiteSlug(stdout) {
+export function registeredManagedSite(stdout) {
   let output;
   try { output = JSON.parse(stripVTControlCharacters(stdout)); }
   catch { throw new ReleaseError("登録済みサイトの slug を読み取れません。"); }
@@ -119,10 +108,12 @@ export function registeredManagedSiteSlug(stdout) {
   visit(output);
   const rows = rowArrays.length === 1 ? rowArrays[0] : [];
   const slug = rows.length === 1 ? rows[0].slug : undefined;
-  if (failed || typeof slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(slug)) {
-    throw new ReleaseError("登録済みサイトの slug を一意に確認できません。");
+  const publishedPageCount = rows.length === 1 ? rows[0].published_page_count : undefined;
+  if (failed || typeof slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(slug)
+    || !Number.isSafeInteger(publishedPageCount) || publishedPageCount < 0) {
+    throw new ReleaseError("登録済みサイトの slug と公開状態を一意に確認できません。");
   }
-  return slug;
+  return { slug, publishedPageCount };
 }
 
 function childEnv() {
@@ -196,12 +187,12 @@ function smokeRequest(settings, request = fetch) {
   async function getResponse(label, path, publicPage = false) {
     const origin = publicPage ? settings.publicOrigin : settings.studioOrigin;
     const headers = { "Cache-Control": "no-cache" };
-    if (!publicPage) headers["CF-Access-Token"] = settings.token;
+    if (!publicPage) Object.assign(headers, { "CF-Access-Client-Id": settings.clientId, "CF-Access-Client-Secret": settings.clientSecret });
     try {
       return await request(`${origin}${path}`, { signal: AbortSignal.timeout(12_000), headers, redirect: "error" });
     } catch (error) {
       if (error instanceof ReleaseError) throw error;
-      throw new ReleaseError(`${label} へのリクエストが失敗しました。ネットワーク、Access、リダイレクトを確認してください。`);
+      throw new ReleaseError(`${label} へのリクエストが失敗しました。ネットワーク、Access の service token の期限とポリシー、リダイレクトを確認してください。`);
     }
   }
   async function get(label, path, mime, publicPage = false) {
@@ -214,42 +205,28 @@ function smokeRequest(settings, request = fetch) {
   return { get, getResponse };
 }
 
-async function smokeDashboardApi(settings, get, readRegisteredSlug) {
-  const session = JSON.parse(await get("/api/session", "/api/session", ["application/json"]));
-  if (session?.status !== "authenticated" || !session.subject || !session.email) throw new ReleaseError("/api/session でユーザーを確認できません。");
-  const path = `/projects/${settings.project}/sites/${settings.site}`;
-  const dashboard = JSON.parse(await get("Dashboard API", `/api${path}/dashboard`, ["application/json"]));
-  if (dashboard?.status !== "ready" || dashboard.projectId !== settings.project || dashboard.siteId !== settings.site || dashboard.members?.status !== "ready") {
-    throw new ReleaseError("Dashboard API で対象サイトとメンバー一覧を確認できません。対象サイトとユーザーの権限を確認してください。");
+async function smokeServiceAccess(settings, get, readRegisteredSite) {
+  const capabilities = JSON.parse(await get("Studio 編集 API", `/api/edit/v2/sites/${settings.site}/capabilities`, ["application/json"]));
+  if (capabilities?.siteId !== settings.site || !Array.isArray(capabilities.operations)
+    || !capabilities.operations.some((operation) => operation?.id === "pages.read")) {
+    throw new ReleaseError("Studio 編集 API で対象サイトの pages.read を確認できません。service token への委任を確認してください。");
   }
   const configuredSitePath = /^\/s\/[^/]+\//u.exec(settings.publicPath)?.[0] ?? "";
   const configuredSiteSlug = /^\/s\/([^/]+)\//u.exec(settings.publicPath)?.[1] ?? "";
-  if (typeof readRegisteredSlug !== "function" || !configuredSiteSlug
-    || await readRegisteredSlug(settings.project, settings.site) !== configuredSiteSlug) {
+  const registered = typeof readRegisteredSite === "function" ? await readRegisteredSite(settings.project, settings.site) : null;
+  if (!configuredSiteSlug || registered?.slug !== configuredSiteSlug) {
     throw new ReleaseError("smoke の公開 path が対象サイトの登録済み slug と一致しません。");
   }
-  const publishedUrl = dashboard.overview?.data?.publishedUrl;
-  let publishedSitePath = "";
-  try {
-    const published = new URL(publishedUrl);
-    if (published.origin === settings.publicOrigin) publishedSitePath = /^\/s\/[^/]+\//u.exec(published.pathname)?.[0] ?? "";
-  } catch { /* unavailable or invalid URL */ }
-  const unpublishedManagedSite = publishedUrl === null && dashboard.overview?.data?.publicationStatus === "unpublished"
-    && dashboard.overview?.data?.publishedPageCount === 0 && settings.publicPath === configuredSitePath;
-  const publishedManagedSite = dashboard.overview?.data?.publicationStatus === "published"
-    && Number.isSafeInteger(dashboard.overview?.data?.publishedPageCount) && dashboard.overview.data.publishedPageCount > 0
-    && publishedSitePath !== "" && publishedSitePath === configuredSitePath;
-  if (dashboard.overview?.status !== "ready" || !configuredSitePath || (!publishedManagedSite && !unpublishedManagedSite)) {
-    throw new ReleaseError("Dashboard API の対象サイトと smoke の公開 path が一致しません。");
+  const published = registered.publishedPageCount > 0;
+  if (!published && settings.publicPath !== configuredSitePath) {
+    throw new ReleaseError("未公開サイトの smoke 公開 path にはサイト先頭の /s/<slug>/ を指定してください。");
   }
-  return { path, published: publishedManagedSite };
+  return { published };
 }
 
-export async function smokeStudio(settings, assets, request = fetch, readRegisteredSlug) {
+export async function smokeStudio(settings, assets, request = fetch, readRegisteredSite) {
   const { get, getResponse } = smokeRequest(settings, request);
-  const { path, published } = await smokeDashboardApi(settings, get, readRegisteredSlug);
-  const dashboard = await get("Dashboard HTML", path, ["text/html"]);
-  if (entryScript.exec(dashboard.toString("utf8"))?.[1] !== assets.entry) throw new ReleaseError("Dashboard HTML が今回の配備の entry script を参照していません。");
+  const { published } = await smokeServiceAccess(settings, get, readRegisteredSite);
   const scriptTypes = ["application/javascript", "text/javascript"];
   if (!(await get("Studio entry script", assets.entry, scriptTypes)).equals(assets.script)) throw new ReleaseError("Studio entry script が今回のビルドと一致しません。");
   if (!(await get("Dashboard の遅延読込 chunk", assets.chunkPath, scriptTypes)).equals(assets.chunk)) throw new ReleaseError("Dashboard の遅延読込 chunk が今回のビルドと一致しません。");
@@ -281,10 +258,11 @@ async function release() {
   try {
     const config = writeConfig(directory, settings);
     const wrangler = (...args) => runWrangler(config, settings, ...args);
-    const readRegisteredSlug = (project, site) => {
-      const sql = `SELECT ms.slug FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = '${project}' AND s.id = '${site}' LIMIT 2`;
-      const stdout = wrangler("対象サイトの登録済み slug を確認", "d1", "execute", "DB", "--remote", "--json", "--command", sql);
-      return registeredManagedSiteSlug(stdout);
+    const readRegisteredSite = (project, site) => {
+      // Count public pages the same way as the Dashboard overview.
+      const sql = `SELECT ms.slug, (SELECT count(*) FROM managed_pages AS mp WHERE mp.site_id = s.id AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL) AS published_page_count FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = '${project}' AND s.id = '${site}' LIMIT 2`;
+      const stdout = wrangler("対象サイトの登録済み slug と公開状態を確認", "d1", "execute", "DB", "--remote", "--json", "--command", sql);
+      return registeredManagedSite(stdout);
     };
     const status = () => JSON.parse(wrangler("Worker の配備状況を確認", "deployments", "status", "--json"));
     const previous = status();
@@ -293,9 +271,8 @@ async function release() {
     const secrets = JSON.parse(wrangler("Worker secret の設定を確認", "secret", "list", "--format", "json"));
     for (const name of requiredSecrets) if (!secrets.some((secret) => secret.name === name)) throw new ReleaseError(`Worker secret ${name} を設定してください。`);
 
-    checkExpiry(settings, 120);
-    console.log("Access セッションと Dashboard の権限を確認");
-    await smokeDashboardApi(settings, smokeRequest(settings).get, readRegisteredSlug);
+    console.log("Access の service token と対象サイトの権限を確認");
+    await smokeServiceAccess(settings, smokeRequest(settings).get, readRegisteredSite);
     const list = () => pendingMigrations(wrangler("D1 の migration 状況を確認", "d1", "migrations", "list", "DB", "--remote"));
     const pending = list();
     if (pending.length) {
@@ -304,14 +281,13 @@ async function release() {
       if (list().length) throw new ReleaseError("D1 に未適用の migration が残っています。");
     }
 
-    checkExpiry(settings, 60);
     if (status().id !== previous.id) throw new ReleaseError("配備前の確認後に Worker の配備が変更されました。対象を確認してください。");
     savePreviousVersion(prior.version_id);
     deployStarted = true;
     wrangler("Studio Worker を配備", "deploy");
     console.log("配備後の smoke を実行");
     for (let attempt = 1; ; attempt++) {
-      try { await smokeStudio(settings, assets, fetch, readRegisteredSlug); break; }
+      try { await smokeStudio(settings, assets, fetch, readRegisteredSite); break; }
       catch (error) {
         if (attempt === 3) throw error;
         await wait(5_000);
