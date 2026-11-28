@@ -2948,6 +2948,12 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
     return { status: response.status, text: await response.text() };
   };
   assert.equal((await publicHtml("/")).status, 404);
+  // 全ページ生成の前に CMS 公開で manifest ができても、確定した固定ページは次の全ページ生成の対象に残る。
+  const confirmed = (await site.read("cms.release.current")).snapshot;
+  await site.read("cms.release.apply", await releasePlan(site, confirmed.schema.schemaRevision, confirmed.releaseId, confirmed.items));
+  await h.cron();
+  assert.equal((await publicHtml("/")).status, 404);
+  assert.equal(counts("managed_page_publications"), 0);
   const operations = `/api/edit/v1/sites/${site.siteId}/operations/`;
   const publishAll = async () => {
     const pending = await body(await h.send(MANAGEMENT_ORIGIN, "GET", operations + "site.publication-changes"), 200);

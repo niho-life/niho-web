@@ -1246,7 +1246,9 @@ async function prepareManagedPublishedPageMutation(store: CmsStore, edition: Man
       const identity = { siteId, pageId: page.page_id, locale: page.locale };
       const bindings = pinned.bindings_json ? parseCmsPageBindings(JSON.parse(pinned.bindings_json), identity) : null;
       const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
-      const cms = bindings && releaseId ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : null;
+      const cms = !bindings ? null : releaseId ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId)
+        // 取込で確定して公開記録がまだないページは、現在の CMS release で生成する。
+        : page.published_publication_id === null ? snapshots.find(({ locale }) => locale === page.locale) : null;
       if (bindings && (!cms || cms.locale !== page.locale)) throw new Error("missing CMS release");
       if (cms) snapshotsById.set(cms.releaseId, cms);
       const original = selected && !route && page.published_manifest_key
