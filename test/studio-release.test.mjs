@@ -45,14 +45,24 @@ test("release preflight rejects missing settings and unsuitable Access credentia
 test("release parses Wrangler list and blocks pending migrations outside the additive allowlist", () => {
   const list = (rows) => ["Resource location: remote", "Migrations to be applied:", "│ Name │", ...rows.map((name) => `│ ${name} │`)].join("\n");
   assert.deepEqual(pendingMigrations("✅ No migrations to apply!\n"), []);
-  const additive = ["0015_cms_delivery.sql", "0016_static_page_publication.sql", "0017_managed_page_sources.sql",
-    "0018_managed_public_embeds.sql", "0019_managed_public_domains.sql", "0020_managed_site_redirects.sql", "0021_managed_published_paths.sql",
-    "0022_managed_site_redirect_versions.sql",
+  const additive = ["0015_cms_delivery.sql", "0016_static_page_publication.sql",
+    "0017_managed_public_embeds.sql", "0018_managed_public_domains.sql", "0019_managed_site_redirects.sql", "0020_managed_published_paths.sql",
+    "0021_managed_page_sources.sql", "0022_managed_site_redirect_versions.sql",
     "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql",
     "0026_managed_site_styles.sql"];
   assert.deepEqual(pendingMigrations(list(additive)), additive);
   assert.throws(() => pendingMigrations(list(["0015_cms_delivery.sql", "0016_drop_old_table.sql"])), /一致しません/u);
   assert.throws(() => pendingMigrations("unknown Wrangler output"), /読み取れません/u);
+});
+
+// D1 はファイル名で適用済みを判定する。配備先に適用した名前を変えると、同じ SQL を再実行して配備が止まる。
+test("applied D1 migration file names stay fixed", () => {
+  for (const name of ["0016_static_page_publication.sql", "0017_managed_public_embeds.sql", "0018_managed_public_domains.sql",
+    "0019_managed_site_redirects.sql", "0020_managed_published_paths.sql", "0021_managed_page_sources.sql",
+    "0022_managed_site_redirect_versions.sql", "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql",
+    "0025_managed_site_imports.sql", "0026_managed_site_styles.sql"]) {
+    assert.ok(existsSync(new URL(`../studio/migrations/${name}`, import.meta.url)), name);
+  }
 });
 
 test("primary-host migration avoids dynamic SQLite GLOB patterns", () => {
@@ -90,8 +100,8 @@ test("release builds a private Wrangler config from external settings", () => {
     assert.equal(config.main, resolve(new URL("../studio/", import.meta.url).pathname, "dist/worker.js"));
     assert.ok(existsSync(join(directory, "migrations", "0015_cms_delivery.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0016_static_page_publication.sql")));
-    for (const name of ["0017_managed_page_sources.sql", "0018_managed_public_embeds.sql", "0019_managed_public_domains.sql",
-      "0020_managed_site_redirects.sql", "0021_managed_published_paths.sql", "0022_managed_site_redirect_versions.sql",
+    for (const name of ["0021_managed_page_sources.sql", "0017_managed_public_embeds.sql", "0018_managed_public_domains.sql",
+      "0019_managed_site_redirects.sql", "0020_managed_published_paths.sql", "0022_managed_site_redirect_versions.sql",
       "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql",
       "0026_managed_site_styles.sql"]) {
       assert.ok(existsSync(join(directory, "migrations", name)));
