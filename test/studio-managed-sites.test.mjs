@@ -2961,7 +2961,9 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
     type: "element", id: `oversized-${index}`, tag: "p", children: [{ type: "text", text: "A".repeat(9_000) }]
   })));
   const oversizedBytes = Buffer.from(JSON.stringify(oversized)), oversizedDigest = createHash("sha256").update(oversizedBytes).digest("hex");
-  await assert.rejects(() => prepareKamakuraSiteImport(oversizedBytes, oversizedDigest, target, embedConnections), /exceeds 200 KiB after lossless normalization/u);
+  // 大きなページも止めずに取り込む（上限は処理上限の 2 MiB だけ）。正規化後の大きさは対応表に残る。
+  const oversizedPrepared = await prepareKamakuraSiteImport(oversizedBytes, oversizedDigest, target, embedConnections);
+  assert.ok(oversizedPrepared.mapping.pages[0].documentBytes.draft.after > 200 * 1024);
   const loadAsset = async () => media;
   await assert.rejects(() => applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, async () => Buffer.alloc(media.length)),
     /source_asset_checksum_mismatch/);
