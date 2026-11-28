@@ -1,6 +1,6 @@
 # 公開HTMLのSEO検査
 
-`studio/managed-html-seo-checks.ts` の `inspectManagedHtmlSeo(html, options)` は、HTML文字列から公開時の警告を返す副作用のない関数です。ネットワーク、DB、R2には接続しません。
+`src/managed-html-seo-checks.ts` の `inspectManagedHtmlSeo(html, options)` は、HTML文字列から公開時の警告を返す副作用のない関数です。ネットワーク、DB、R2には接続しません。
 
 `options` にはページの `locale`、相対URLを解決する絶対URLの `pageUrl`、同じサイトで公開済みのroute path一覧 `knownPaths` を渡します。`knownPaths` には公開URLのsite prefixを含めます。末尾slashの有無は同じrouteとして扱い、queryとfragmentはroute照合に含めません。
 
